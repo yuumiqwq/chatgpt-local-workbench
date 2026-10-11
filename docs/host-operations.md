@@ -81,6 +81,7 @@ Executors must be installed and configured before use. Codex is discovered on PA
 | `CODEX_HOME` | Existing Codex profile fallback when no home is selected in the host policy. |
 | `ENGINEERING_BRIDGE_CODEX_AUTH_HOME` | Optional execution profile override. History discovery still uses the configured history homes. Cross-home resume uses a verified rollout path and checks the returned UUID. |
 | `ENGINEERING_BRIDGE_CODEX_PROVIDER` | Optional provider ID already configured in the selected Codex profile. |
+| `ENGINEERING_BRIDGE_CODEX_DEFAULT_MODEL` | Default Codex model for Bridge executions, including resumed turns. An explicit model selection still takes precedence, and the user Codex profile is unchanged. |
 | `ENGINEERING_BRIDGE_CODEX_DISABLE_MCP=1` | Disables detected configured MCP servers in spawned Codex processes, including `engineering-bridge`, to avoid recursive tool invocation. Does not edit the profile configuration. |
 | `ENGINEERING_BRIDGE_CODEX_FORWARD_PROXY=1` | Explicitly forwards `HTTP_PROXY`, `HTTPS_PROXY` and `NO_PROXY` into spawned Codex processes. |
 | `ENGINEERING_BRIDGE_CODEX_EXECUTION_TIMEOUT_SECONDS` | Codex turn hard deadline; default 3600 seconds. |

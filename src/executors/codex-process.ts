@@ -26,6 +26,11 @@ export function startCodexAppServer(cwd: string, host: Readonly<NodeJS.ProcessEn
     if (!/^[a-zA-Z0-9_-]+$/u.test(provider)) throw new Error("Invalid configured provider.");
     args.push("-c", "model_provider=" + JSON.stringify(provider));
   }
+  const bridgeModel = host.ENGINEERING_BRIDGE_CODEX_DEFAULT_MODEL;
+  if (bridgeModel !== undefined) {
+    if (!/^[a-zA-Z0-9._-]+$/u.test(bridgeModel)) throw new Error("Invalid configured default model.");
+    args.push("-c", "model=" + JSON.stringify(bridgeModel));
+  }
   if (host.ENGINEERING_BRIDGE_CODEX_DISABLE_MCP === "1") {
     // An empty config table merges with existing entries instead of disabling
     // them. Disable each configured server explicitly, including ourselves.

@@ -441,14 +441,15 @@ export class CodexExecutor implements Executor {
       await this.call("initialize", { clientInfo: { name: "engineering-bridge", version: VERSION },
         ...(resumeFromPath ? { capabilities: { experimentalApi: true } } : {}) });
       this.notify("initialized", {});
-      if (request.model !== undefined || request.reasoning_effort !== undefined) {
+      const selectedModel = request.model ?? this.hostEnvironment.ENGINEERING_BRIDGE_CODEX_DEFAULT_MODEL;
+      if (selectedModel !== undefined || request.reasoning_effort !== undefined) {
         const modelResult = await this.call("model/list", {});
         if (!object(modelResult) || !Array.isArray(modelResult.data)) throw new Error();
         const models = modelResult.data.filter((entry): entry is Record<string, unknown> =>
           object(entry) && typeof entry.model === "string"
         );
-        const selected = request.model !== undefined
-          ? models.find((entry) => entry.model === request.model)
+        const selected = selectedModel !== undefined
+          ? models.find((entry) => entry.model === selectedModel)
           : models.find((entry) => entry.isDefault === true);
         if (!selected) throw new CoreError("UNSUPPORTED_ACTION");
         if (request.reasoning_effort !== undefined) {
@@ -486,7 +487,7 @@ export class CodexExecutor implements Executor {
         threadId: this.threadId, input: [{ type: "text", text: request.instruction }],
         cwd: this.workspaceRoot, approvalPolicy: "never", sandboxPolicy
       };
-      if (request.model !== undefined) turnParams.model = request.model;
+      if (selectedModel !== undefined) turnParams.model = selectedModel;
       if (request.reasoning_effort !== undefined) turnParams.effort = request.reasoning_effort;
       const turnResult = await this.call("turn/start", turnParams);
       if (!object(turnResult) || !object(turnResult.turn) || typeof turnResult.turn.id !== "string") throw new Error();

@@ -229,6 +229,54 @@ test("preserves the default Codex JSON-RPC flow when model selection is omitted"
   assert.equal("effort" in turnStart.params, false);
 });
 
+test("a Bridge default model applies to new and resumed turns on its selected provider", async () => {
+  for (const threadId of [undefined, "thread-1"]) {
+    const invocations: Invocation[] = [];
+    const executor = new CodexExecutor(TRUSTED_CWD, fakeStarter({
+      appServerOutput: "done",
+      modelList: [
+        { id: "profile-default", model: "gpt-6.1-sol", isDefault: true },
+        { id: "bridge-default", model: "gpt-6-astra" }
+      ]
+    }, invocations), {
+      ENGINEERING_BRIDGE_CODEX_PROVIDER: "openai",
+      ENGINEERING_BRIDGE_CODEX_DEFAULT_MODEL: "gpt-6-astra"
+    }, "linux");
+    const result = await executor.execute({ taskId: TASK_ID, instruction: "inspect", ...(threadId ? { threadId } : {}) });
+    assert.equal(result.kind, "completed");
+    assert.ok(invocations[0]!.args.includes('model_provider="openai"'));
+    assert.ok(invocations[0]!.args.includes('model="gpt-6-astra"'));
+    const messages = invocations[0]!.stdin.trim().split("\n").map(line => JSON.parse(line));
+    assert.equal(messages.find(message => message.method === "turn/start").params.model, "gpt-6-astra");
+    assert.ok(messages.find(message => message.method === "model/list"));
+    assert.ok(messages.find(message => message.method === (threadId ? "thread/resume" : "thread/start")));
+  }
+});
+
+test("explicit model selection takes precedence over the Bridge default", async () => {
+  const invocations: Invocation[] = [];
+  const executor = new CodexExecutor(TRUSTED_CWD, fakeStarter({
+    appServerOutput: "done",
+    modelList: [
+      { id: "bridge-default", model: "gpt-6-astra" },
+      { id: "chosen", model: "gpt-5-codex" }
+    ]
+  }, invocations), { ENGINEERING_BRIDGE_CODEX_DEFAULT_MODEL: "gpt-6-astra" });
+  const result = await executor.execute({ taskId: TASK_ID, instruction: "inspect", model: "gpt-5-codex" });
+  assert.equal(result.kind, "completed");
+  const messages = invocations[0]!.stdin.trim().split("\n").map(line => JSON.parse(line));
+  assert.equal(messages.find(message => message.method === "turn/start").params.model, "gpt-5-codex");
+});
+
+test("malformed Bridge default model never starts a Codex process", async () => {
+  const invocations: Invocation[] = [];
+  const executor = new CodexExecutor(TRUSTED_CWD, fakeStarter({ appServerOutput: "unused" }, invocations),
+    { ENGINEERING_BRIDGE_CODEX_DEFAULT_MODEL: "bad model; invalid" });
+  const result = await executor.execute({ taskId: TASK_ID, instruction: "inspect" });
+  assert.equal(result.kind, "failed");
+  assert.equal(invocations.length, 0);
+});
+
 test("validates the requested model and effort before starting the normal Codex flow", async () => {
   const invocations: Invocation[] = [];
   const executor = timedExecutor(fakeStarter({
