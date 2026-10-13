@@ -96,11 +96,13 @@ export function registerHostTools(
     }, signal, options.queryThreads)));
 
   server.registerTool("read_host_file", {
-    description: "Read a bounded file chunk outside Git workspaces, with file size and SHA-256. Use base64 for binary files. Credential files, links and files above 512 MiB are rejected.",
+    description: "Read a bounded file chunk with size and next_offset. UTF-8 pages end at complete characters; follow next_offset for the next page. Use base64 for binary files. Reading does not hash the file by default; set include_sha256=true once when preparing a replacement, move or deletion. Credential files, links and files above 512 MiB are rejected.",
     inputSchema: { path: pathSchema, offset: z.number().int().min(0).optional(),
       max_bytes: z.number().int().min(1).max(262_144).optional(),
-      encoding: z.enum(["utf8", "base64"]).optional() }, annotations: readOnly
-  }, ({ path, offset, max_bytes, encoding }) => safe("read", { path }, () => files.read(path, offset, max_bytes, encoding)));
+      encoding: z.enum(["utf8", "base64"]).optional(),
+      include_sha256: z.boolean().optional().default(false) }, annotations: readOnly
+  }, ({ path, offset, max_bytes, encoding, include_sha256 }) => safe("read", { path },
+    () => files.read(path, offset, max_bytes, encoding, include_sha256)));
 
   server.registerTool("list_host_path", {
     description: "List one allowed local directory with offset pagination. Does not recurse or follow junctions.",

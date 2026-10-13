@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { constants, createReadStream } from "node:fs";
+import { constants, createReadStream, type Stats } from "node:fs";
 import { copyFile, lstat, mkdir, open, readdir, rename, rmdir, unlink } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 
@@ -8,12 +8,15 @@ import { HostError, HostPolicy } from "./host-policy.js";
 const MAX_TEXT_BYTES = 2 * 1024 * 1024;
 const MAX_FILE_BYTES = 512 * 1024 * 1024;
 
-export async function fileDigest(path: string): Promise<string> {
-  const stat = await lstat(path);
+function checkRegularFile(stat: Stats): void {
   if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink > 1) {
     throw new HostError("HOST_FILE_UNSUPPORTED", "A regular file without additional hard links is required.");
   }
   if (stat.size > MAX_FILE_BYTES) throw new HostError("HOST_FILE_TOO_LARGE", "The file exceeds the 512 MiB operation limit.");
+}
+
+export async function fileDigest(path: string): Promise<string> {
+  checkRegularFile(await lstat(path));
   const hash = createHash("sha256");
   for await (const chunk of createReadStream(path)) hash.update(chunk as Buffer);
   return hash.digest("hex");
@@ -41,23 +44,40 @@ export class HostFiles {
     return result;
   }
 
-  async read(pathValue: string, offset = 0, maxBytes = 65_536, encoding: "utf8" | "base64" = "utf8") {
+  async read(pathValue: string, offset = 0, maxBytes = 65_536, encoding: "utf8" | "base64" = "utf8", includeSha256 = false) {
     if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(maxBytes) ||
         maxBytes < 1 || maxBytes > 262_144) throw new HostError("HOST_INVALID_ARGUMENT", "Invalid read bounds.");
     const path = await this.policy.check(pathValue, "read");
-    const sha256 = await fileDigest(path);
+    checkRegularFile(await lstat(path));
+    const sha256 = includeSha256 ? await fileDigest(path) : undefined;
     const handle = await open(path, "r");
     try {
       const stat = await handle.stat();
+      checkRegularFile(stat);
       const buffer = Buffer.alloc(Math.min(maxBytes, Math.max(0, stat.size - offset)));
       const { bytesRead } = await handle.read(buffer, 0, buffer.length, offset);
       const data = buffer.subarray(0, bytesRead);
       if (encoding === "utf8" && data.includes(0)) {
         throw new HostError("HOST_BINARY_FILE", "Use base64 encoding for a binary file.");
       }
-      return { path, size: stat.size, sha256, encoding, offset, bytes_read: bytesRead,
-        next_offset: offset + bytesRead, truncated: offset + bytesRead < stat.size,
-        content: data.toString(encoding) };
+      let content: string;
+      let consumed = bytesRead;
+      if (encoding === "utf8") {
+        try {
+          // Leave an incomplete trailing code point for the next page. Keep a
+          // leading BOM so the returned byte offset still matches the file.
+          content = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true })
+            .decode(data, { stream: offset + bytesRead < stat.size });
+        } catch {
+          throw new HostError("HOST_INVALID_UTF8", "Use a UTF-8 character boundary for offset, or base64 for non-UTF-8 data.");
+        }
+        consumed = Buffer.byteLength(content, "utf8");
+        if (bytesRead > 0 && consumed === 0) {
+          throw new HostError("HOST_INVALID_ARGUMENT", "The page cannot fit one UTF-8 character; use max_bytes of at least 4.");
+        }
+      } else content = data.toString("base64");
+      return { path, size: stat.size, ...(sha256 === undefined ? {} : { sha256 }), encoding, offset, bytes_read: consumed,
+        next_offset: offset + consumed, truncated: offset + consumed < stat.size, content };
     } finally { await handle.close(); }
   }
 

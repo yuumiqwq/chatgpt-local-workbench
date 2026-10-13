@@ -73,7 +73,7 @@ ChatGPT 可以通过 Secure MCP Tunnel 连接此 STDIO 服务，也可以连接�
 | 持续处理事项 | `list_work` 查找已有工作，`open_work` 打开工作，`continue_work` 执行下一轮，然后循环 `wait_task` 直到 `ready=true`。 |
 | 临时检查或修改 | `run_temp` 指定项目、指令和执行器，通过返回的 `task_id` 等待结果。只读检查显式传入 `access: "read-only"`。 |
 | 保存已完成事项 | 检查执行结果和实际产物后调用 `finish_work`，写入摘要及文件路径、提交等引用；以后仍可重新打开。 |
-| 主机文件操作 | `host_capabilities` 查看范围，读取文件得到 SHA-256，再以该摘要替换或删除文件。 |
+| 主机文件操作 | `host_capabilities` 查看范围；普通阅读按页读取，准备替换、移动或删除时，通过 `read_host_file` 的 `include_sha256: true` 获取一次校验摘要。 |
 
 `wait_task` 默认单次最多等待 300 秒，返回 `ready=false` 时需要继续等待；最大等待时间可配置，且不会影响执行器自身的存活判定。一轮执行完成只表示执行器结束，事项完成由调用方结合结果判断；中断、超时或对话停止都不会撤销已经写入的文件。更多状态与保留规则见[工作管理](docs/work-management.md)。
 

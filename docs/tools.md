@@ -20,7 +20,7 @@ chatgpt-with-codex exposes durable Codex work, temporary agent execution and opt
 | host_capabilities | Current host settings and execution limits. |
 | list_codex_projects | Optional query/codex_home/cursor/scan_limit/archived; project groups from a bounded history page. |
 | list_codex_threads | Optional query/cwd/codex_home/cursor/limit/archived; native IDs and titles. |
-| read_host_file | path; optional offset, max_bytes and utf8/base64 encoding. |
+| read_host_file | path; optional offset, max_bytes and utf8/base64 encoding. include_sha256 defaults to false; request it once before a replacement, move or deletion. |
 | list_host_path | path; optional offset/limit. |
 | write_host_text_file | path + content; expected_sha256 for replacement; optional create_parents. |
 | copy_file | source + destination; optional create_parents. |
@@ -30,6 +30,8 @@ chatgpt-with-codex exposes durable Codex work, temporary agent execution and opt
 | reload_workspace_config | Validate/reload when no executions are pending. |
 
 There are 24 tools with optional host operations enabled, 14 without them. `list_workspaces`, `bind_project` and `create_project` return project identity fields without permission metadata. Host files retain their configured roots and content hash checks; enabled host commands and full-access Codex or DSH executions use OS account privileges.
+
+`read_host_file` reads only the requested page by default and omits `sha256`. Set `include_sha256: true` when obtaining a content hash for `expected_sha256`; this explicitly scans the whole file. UTF-8 pages may be shorter than `max_bytes` to keep characters intact; follow the returned `next_offset`. A page must fit at least one character, so `max_bytes` of at least 4 supports every UTF-8 code point. Base64 pagination retains exact byte boundaries.
 
 Access accepts read-only or danger-full-access for Codex and DSH, with full access the default. run_temp applies its own per-call access selection even when associated with a work_id; omitting access does not inherit that work's stored mode. continue_work uses the stored work access unless overridden. Old work records are normalized during load while historical result records retain the access that was used. See [security behavior](security.md) for each executor's permission mechanism.
 

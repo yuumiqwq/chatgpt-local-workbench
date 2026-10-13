@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { realpathSync } from "node:fs";
+import fs, { realpathSync } from "node:fs";
 import { link, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { syncBuiltinESMExports } from "node:module";
 import { join, relative, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -53,7 +54,7 @@ test("file tools create and replace Unicode text only against the reviewed hash"
   const { allowed, files } = await fixture(t);
   const path = join(allowed, "含 空格", "笔记.md");
   const created = await files.write(path, "原始笔记", undefined, true);
-  const read = await files.read(path);
+  const read = await files.read(path, 0, 65_536, "utf8", true);
   assert.equal(read.content, "原始笔记");
   assert.equal(read.sha256, created.sha256);
   await assert.rejects(files.write(path, "overwrite"), hostCode("HOST_DESTINATION_EXISTS"));
@@ -104,6 +105,7 @@ test("junction ancestors and hard-linked files do not escape file policy", async
   const hardLink = join(f.allowed, "hard.txt");
   await writeFile(externalFile, "original");
   await link(externalFile, hardLink);
+  await assert.rejects(f.files.read(hardLink), hostCode("HOST_FILE_UNSUPPORTED"));
   await assert.rejects(f.files.write(hardLink, "changed", digest("original")), hostCode("HOST_FILE_UNSUPPORTED"));
   assert.equal(await readFile(externalFile, "utf8"), "original");
 });
@@ -155,6 +157,63 @@ test("bounded reads and paginated directory listings preserve access to later co
   assert.equal(page.entries.length, 1);
   assert.equal(page.truncated, true);
   assert.equal((await files.list(allowed, page.next_offset, 1)).entries.length, 1);
+});
+
+test("ordinary pages avoid full-file streams and hashes are explicitly requested", async t => {
+  const { allowed, files } = await fixture(t);
+  const path = join(allowed, "pages.txt");
+  await writeFile(path, "0123456789");
+  const streams = t.mock.method(fs, "createReadStream");
+  syncBuiltinESMExports();
+  t.after(() => { streams.mock.restore(); syncBuiltinESMExports(); });
+
+  const first = await files.read(path, 0, 3);
+  const second = await files.read(path, first.next_offset, 3);
+  assert.equal(first.content + second.content, "012345");
+  assert.equal("sha256" in first, false);
+  assert.equal("sha256" in second, false);
+  assert.equal(streams.mock.callCount(), 0);
+  const reviewed = await files.read(path, 0, 3, "utf8", true);
+  assert.equal(reviewed.sha256, digest("0123456789"));
+  assert.equal(streams.mock.callCount(), 1);
+});
+
+test("UTF-8 pagination preserves Chinese, emoji and BOM at small and default boundaries", async t => {
+  const { allowed, files } = await fixture(t);
+  const path = join(allowed, "unicode.txt");
+  for (const original of ["中文ABC", "\uFEFFa中文😺e\u0301\nend", "a".repeat(65_535) + "中😺end"]) {
+    await writeFile(path, original);
+    const sizes = original.length > 100 ? [65_536] : [4, 5, 6, 7];
+    for (const size of sizes) {
+      let offset = 0;
+      let restored = "";
+      for (;;) {
+        const page = await files.read(path, offset, size);
+        assert.ok(page.bytes_read <= size);
+        assert.equal(page.bytes_read, Buffer.byteLength(page.content, "utf8"));
+        assert.equal(page.next_offset, offset + page.bytes_read);
+        restored += page.content;
+        if (!page.truncated) break;
+        assert.ok(page.next_offset > offset);
+        offset = page.next_offset;
+      }
+      assert.equal(restored, original);
+    }
+  }
+});
+
+test("invalid UTF-8 offsets and pages too small for a character fail without corrupting data", async t => {
+  const { allowed, files } = await fixture(t);
+  const path = join(allowed, "character.txt");
+  await writeFile(path, "中a");
+  await assert.rejects(files.read(path, 0, 1), hostCode("HOST_INVALID_ARGUMENT"));
+  await assert.rejects(files.read(path, 1, 4), hostCode("HOST_INVALID_UTF8"));
+  assert.equal((await files.read(path, 3, 1)).content, "a");
+  const binary = await files.read(path, 0, 1, "base64");
+  assert.deepEqual(Buffer.from(binary.content, "base64"), Buffer.from("中a").subarray(0, 1));
+  assert.equal(binary.next_offset, 1);
+  await writeFile(path, Buffer.from([0xe4, 0xb8]));
+  await assert.rejects(files.read(path), hostCode("HOST_INVALID_UTF8"));
 });
 
 test("host commands need a separate opt-in and preserve literal argv", async t => {
@@ -260,6 +319,13 @@ test("MCP advertises enabled tools, validates deletion content hashes and audits
   const path = join(f.allowed, "note.txt");
   const content = "private-content-marker";
   assert.notEqual((await client.callTool({ name: "write_host_text_file", arguments: { path, content } })).isError, true);
+  const readPage = await client.callTool({ name: "read_host_file", arguments: { path, max_bytes: 4 } });
+  const pageBody = JSON.parse((readPage.content as Array<{ text: string }>)[0]!.text);
+  assert.equal(pageBody.content, content.slice(0, 4));
+  assert.equal("sha256" in pageBody, false);
+  const readHash = await client.callTool({ name: "read_host_file", arguments: { path, include_sha256: true } });
+  const hashBody = JSON.parse((readHash.content as Array<{ text: string }>)[0]!.text);
+  assert.equal(hashBody.sha256, digest(content));
   assert.equal((await client.callTool({ name: "delete_file", arguments: {
     path, expected_sha256: digest("stale")
   } })).isError, true);

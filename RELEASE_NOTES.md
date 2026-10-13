@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Read file pages without computing a full-file SHA-256 by default. Callers preparing a replacement, move or deletion can request `include_sha256: true`; refresh client tool metadata after deployment.
+- Preserve complete UTF-8 characters and byte offsets across file pages, including Chinese, emoji and byte order marks. Base64 reads retain exact byte pagination.
 - Raise the default executor turn deadline to 60 minutes. Codex now uses a five-minute ordinary protocol-inactivity watchdog and a 15-minute command-in-progress inactivity watchdog, with environment overrides for both and for the 30-second RPC deadline.
 - Distinguish total-deadline, RPC-timeout and failed-turn outcomes as `EXECUTION_DEADLINE_EXCEEDED`, `CODEX_RPC_TIMEOUT` and `CODEX_TURN_FAILED`; retain the existing safe server-overloaded message and RPC rejection metadata.
 - Allow `wait_task` long-polls up to 300 seconds by default without extending executor liveness, and expose live `last_activity_at`, `active_item` and `elapsed_seconds` diagnostics while a task is running.

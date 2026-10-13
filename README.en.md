@@ -62,7 +62,7 @@ Start with `list_workspaces` and use an actual returned `workspace_id`. Resolve 
 | Continue an ongoing matter | Find it with `list_work`, open it with `open_work`, execute `continue_work`, then repeat `wait_task` until `ready=true`. |
 | One-off inspection or editing | Call `run_temp` with a project, instruction and executor. Use `access: "read-only"` explicitly for read-only inspection. Wait using the returned `task_id`. |
 | Record completion | Verify the result and artifacts, then call `finish_work` with a summary and references such as file paths or commits. Work can be reopened later. |
-| Direct file operations | Inspect `host_capabilities`, read the file to obtain its SHA-256, then supply that digest when replacing or deleting it. |
+| Direct file operations | Inspect `host_capabilities` and read pages normally; request `include_sha256: true` in `read_host_file` once when preparing a replacement, move or deletion. |
 
 Each `wait_task` call waits at most 300 seconds by default; call it again when `ready=false`. The maximum is configurable without affecting executor liveness. A completed execution does not establish that the goal succeeded. Interruption, timeout and the chat ending do not undo file changes. See [work management](docs/work-management.md) for state and retention details.
 

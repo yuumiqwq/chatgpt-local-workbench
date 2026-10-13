@@ -39,7 +39,7 @@ test("MCP validates and reloads workspace identity configuration", async t => {
   };
   const before = await call("list_workspaces");
   assert.deepEqual(Object.keys(before.body.workspaces[0]).sort(), ["name", "root", "source", "workspace_id"]);
-  const read = await call("read_host_file", { path: configPath });
+  const read = await call("read_host_file", { path: configPath, include_sha256: true });
   const invalid = await call("write_host_text_file", { path: canonicalConfigPath,
     content: JSON.stringify([{ id: "bad", root: "relative" }]), expected_sha256: read.body.sha256 });
   assert.equal(invalid.error, true);
