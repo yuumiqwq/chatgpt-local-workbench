@@ -317,6 +317,45 @@ test("concurrent archived history adoption keeps one work record", async t => {
   assert.equal(service.list().total, 1);
 });
 
+for (const lookupFails of [false, true]) {
+  test(`unarchive stays persisted when session lookup ${lookupFails ? "fails" : "overlaps status queries"}`, async t => {
+    const f = await fixture(t);
+    const work = await f.service.open({ thread_id: randomUUID() });
+    await f.service.manage(work.work_id, "archive");
+    const policy = await HostPolicy.create({ version: 1, codex_homes: [f.root] }, join(f.root, "archive-policy"));
+    let release!: () => void;
+    let entered!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const located = new Promise<void>(resolve => { entered = resolve; });
+    t.after(release);
+    const calls: string[] = [];
+    const service = new WorkService(f.path, new RegisteredWorkspaceRegistry([]),
+      () => ({ execute: async () => ({ kind: "completed", output: "continued" }) }), policy,
+      async (_home, method) => { calls.push(method); return {}; },
+      async (_policy, threadId) => {
+        entered(); await gate;
+        if (lookupFails) throw new Error("Session lookup failed");
+        return { threadId, cwd: f.root, codexHome: f.root, rolloutPath: join(f.root, threadId + ".jsonl") };
+      });
+    service.load();
+    const continuing = service.continue(work.work_id, { instruction: "resume" });
+    await located;
+    // Readers in this instance and another process must see the native transition.
+    service.list(); service.taskView(randomUUID());
+    const during = f.create().list().works[0];
+    release();
+    if (lookupFails) await assert.rejects(continuing, /Session lookup failed/);
+    else {
+      const run = await continuing;
+      assert.equal((await service.waitTask(run.task_id))?.state, "completed");
+    }
+    assert.deepEqual(calls, ["thread/unarchive"]);
+    assert.equal(during?.archived, false);
+    assert.equal(f.create().list().works[0]?.archived, false);
+    assert.equal(service.hasPendingTasks(), false);
+  });
+}
+
 test("legacy workspace-write setting resumes with full access while old runs remain historical", async t => {
   const f = await fixture(t);
   const work = await f.service.open({ workspace_id: "project" });

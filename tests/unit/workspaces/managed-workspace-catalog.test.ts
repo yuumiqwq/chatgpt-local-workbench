@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -113,3 +115,55 @@ test("a catalog without a state path stays process-local", async () => {
   const { id } = await catalog.registerOnce(canonical("local"));
   assert.deepEqual(catalog.entries(), [{ id, root: canonical("local") }]);
 });
+
+test("independent loaded catalogs preserve registrations and reuse existing identities", async () => {
+  const path = catalogPath();
+  const a = new ManagedWorkspaceCatalog(path), b = new ManagedWorkspaceCatalog(path);
+  await Promise.all([a.load(), b.load()]);
+  const first = await a.registerOnce(canonical("a"));
+  const second = await b.registerOnce(canonical("b"));
+  const repeated = await b.registerOnce(canonical("a"));
+  assert.deepEqual(repeated, { id: first.id, created: false });
+  const reloaded = new ManagedWorkspaceCatalog(path);
+  await reloaded.load();
+  assert.deepEqual(reloaded.entries(), [
+    { id: first.id, root: canonical("a") }, { id: second.id, root: canonical("b") }
+  ]);
+});
+
+for (const sameRoot of [false, true]) {
+  test(`separate processes migrate and register ${sameRoot ? "the same" : "different"} roots without lost records`, { timeout: 20_000 }, async t => {
+    const directory = mkdtempSync(join(tmpdir(), "bridge-catalog-processes-"));
+    t.after(() => rmSync(directory, { recursive: true, force: true }));
+    const path = join(directory, "catalog.json");
+    const legacy = { id: "00000000-0000-4000-8000-000000000001", root: canonical("legacy") };
+    writeFileSync(path, JSON.stringify({ version: 1, workspaces: [legacy] }));
+    const source = `
+      import { ManagedWorkspaceCatalog } from ${JSON.stringify(new URL("../../../src/workspaces/managed-workspace-catalog.js", import.meta.url).href)};
+      const catalog = new ManagedWorkspaceCatalog(process.argv[1]);
+      await catalog.load();
+      process.on("message", async () => {
+        process.send(await catalog.registerOnce(process.argv[2]));
+        process.disconnect();
+      });
+      process.send("ready");
+    `;
+    const roots = [canonical("a"), canonical(sameRoot ? "a" : "b")];
+    const children = roots.map(root => spawn(process.execPath, ["--input-type=module", "--eval", source, path, root], {
+      stdio: ["ignore", "ignore", "inherit", "ipc"], windowsHide: true
+    }));
+    t.after(() => { for (const child of children) if (child.exitCode === null) child.kill(); });
+    const exits = children.map(child => once(child, "exit"));
+    await Promise.all(children.map(child => once(child, "message")));
+    const replies = children.map(child => once(child, "message"));
+    for (const child of children) child.send("register");
+    const results = (await Promise.all(replies)).map(([result]) => result as { id: string; created: boolean });
+    for (const [code] of await Promise.all(exits)) assert.equal(code, 0);
+    const disk = JSON.parse(readFileSync(path, "utf8"));
+    assert.equal(disk.version, 2);
+    assert.equal(disk.workspaces.length, sameRoot ? 2 : 3);
+    assert.deepEqual(disk.workspaces.find((entry: { root: string }) => entry.root === legacy.root), legacy);
+    roots.forEach((root, i) => assert.equal(disk.workspaces.find((entry: { root: string }) => entry.root === root)?.id, results[i]?.id));
+    assert.equal(results.filter(result => result.created).length, sameRoot ? 1 : 2);
+  });
+}

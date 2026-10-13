@@ -4,7 +4,7 @@ import { PassThrough, Writable } from "node:stream";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import test from "node:test";
 import type { ProcessStarter } from "../../../src/executors/codex-process.js";
-import { queryCodexThreadList } from "../../../src/host/codex-thread-list.js";
+import { queryCodexThread, queryCodexThreadList } from "../../../src/host/codex-thread-list.js";
 import { HostError } from "../../../src/host/host-policy.js";
 
 function fixture(mode: "ok" | "hold" | "oversize" | "error" = "ok") {
@@ -69,4 +69,13 @@ test("catalog rejects oversized and error responses without reflecting private d
       error instanceof HostError && error.code === "CODEX_CATALOG_FAILED" && !error.message.includes("PRIVATE_KEY"));
     assert.equal(f.killed(), true);
   }
+});
+
+test("native management errors describe the request without misreporting a thread-list failure", async () => {
+  const f = fixture("error");
+  await assert.rejects(queryCodexThread(process.cwd(), "thread/archive", { threadId: "thread" }, undefined, f.start, 1000, {}), error =>
+    error instanceof HostError && error.code === "CODEX_CATALOG_FAILED" &&
+    error.message === "Codex could not complete the local request.");
+  assert.equal(f.messages.at(-1)?.method, "thread/archive");
+  assert.equal(f.killed(), true);
 });

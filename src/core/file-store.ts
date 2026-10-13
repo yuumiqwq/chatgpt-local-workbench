@@ -1,8 +1,8 @@
 import { closeSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 
-/** Serialize short registry writes across desktop/tunnel Bridge processes. */
-export function withWorkStoreLock<T>(path: string, operation: () => T): T {
+/** Serialize short, synchronous read-modify-write operations across Bridge processes. */
+export function withFileStoreLock<T>(path: string, operation: () => T): T {
   mkdirSync(dirname(path), { recursive: true });
   const lock = path + ".lock";
   const deadline = Date.now() + 5000;
@@ -23,7 +23,7 @@ export function withWorkStoreLock<T>(path: string, operation: () => T): T {
       } catch (readError) {
         if ((readError as NodeJS.ErrnoException).code === "ENOENT") continue;
       }
-      if (Date.now() >= deadline) throw new Error("Work registry write is busy; retry the operation.");
+      if (Date.now() >= deadline) throw new Error("Registry write is busy; retry the operation.");
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
     }
   }
@@ -36,7 +36,7 @@ export function processIsAlive(pid: number): boolean {
   catch (error) { return (error as NodeJS.ErrnoException).code !== "ESRCH"; }
 }
 
-export function atomicWorkJson(path: string, value: unknown) {
+export function atomicJson(path: string, value: unknown) {
   mkdirSync(dirname(path), { recursive: true });
   const staging = path + "." + process.pid + ".tmp";
   try {

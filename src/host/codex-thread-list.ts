@@ -32,9 +32,9 @@ export function queryCodexThread(home: string, method: string, params: Record<st
       signalExecution(child, process.platform, "SIGKILL");
       if (error) reject(error); else resolve(result);
     };
-    const fail = () => finish(new HostError("CODEX_CATALOG_FAILED", "Codex could not return a bounded local thread list."));
-    const abort = () => finish(new HostError("CODEX_CATALOG_CANCELLED", "The thread list request was cancelled."));
-    const timer = setTimeout(() => finish(new HostError("CODEX_CATALOG_TIMEOUT", "The local thread list request timed out.")), timeoutMs);
+    const fail = () => finish(new HostError("CODEX_CATALOG_FAILED", "Codex could not complete the local request."));
+    const abort = () => finish(new HostError("CODEX_CATALOG_CANCELLED", "The local Codex request was cancelled."));
+    const timer = setTimeout(() => finish(new HostError("CODEX_CATALOG_TIMEOUT", "The local Codex request timed out.")), timeoutMs);
     signal?.addEventListener("abort", abort, { once: true });
     child.on("error", fail);
     child.on("close", fail);

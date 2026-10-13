@@ -1,6 +1,6 @@
 import { readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { atomicWorkJson as atomicJson, processIsAlive, withWorkStoreLock } from "./work-store.js";
+import { atomicJson, processIsAlive, withFileStoreLock } from "../core/file-store.js";
 import { setTimeout as sleep } from "node:timers/promises";
 import { z } from "zod";
 import { newId } from "../core/ids.js";
@@ -118,7 +118,7 @@ export class WorkService {
   }
 
   private save() {
-    withWorkStoreLock(this.path, () => {
+    withFileStoreLock(this.path, () => {
       let disk = StoreSchema.parse({ version: 1, works: [], runs: [] });
       try { disk = StoreSchema.parse(JSON.parse(readFileSync(this.path, "utf8").replace(/^\uFEFF/u, ""))); }
       catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
@@ -228,6 +228,9 @@ export class WorkService {
         if (work.archived) {
           await this.native(work.codex_home, "thread/unarchive", { threadId: work.thread_id });
           work.archived = false;
+          work.updated_at = now();
+          // Commit the completed native transition before another await allows refresh().
+          this.save();
         }
         const session = await this.locate(this.policy, work.thread_id);
         path = session.rolloutPath;

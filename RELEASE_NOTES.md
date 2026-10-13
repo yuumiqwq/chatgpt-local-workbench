@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Coordinate managed workspace registration and legacy migration across Bridge processes with a shared file lock. Preserve existing IDs and other processes' records, reusing the work registry's atomic JSON writer and removing the redundant catalog write queue.
+- Persist successful native unarchive transitions before session lookup, so overlapping status queries or a failed lookup cannot restore an obsolete archived flag.
+- Upgrade the MCP SDK to `^1.32.1` and refresh affected transitive dependencies to patched compatible versions. Preserve existing tool interfaces and permission settings.
+- Correct native-management failure messages that previously described archive/unarchive/delete requests as thread-list requests.
 - Read file pages without computing a full-file SHA-256 by default. Callers preparing a replacement, move or deletion can request `include_sha256: true`; refresh client tool metadata after deployment.
 - Preserve complete UTF-8 characters and byte offsets across file pages, including Chinese, emoji and byte order marks. Base64 reads retain exact byte pagination.
 - Raise the default executor turn deadline to 60 minutes. Codex now uses a five-minute ordinary protocol-inactivity watchdog and a 15-minute command-in-progress inactivity watchdog, with environment overrides for both and for the 30-second RPC deadline.
