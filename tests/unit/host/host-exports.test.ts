@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { createHash, randomBytes } from "node:crypto";
 import { syncBuiltinESMExports } from "node:module";
+import { createReadStream } from "node:fs";
+import { execFileSync } from "node:child_process";
 import fs, { link, mkdir, mkdtemp, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { join, parse, resolve, sep } from "node:path";
 import test, { type TestContext } from "node:test";
@@ -11,6 +13,7 @@ import { EXPORT_CHUNK_BYTES, EXPORT_MAX_ACTIVE, HostExports } from "../../../src
 import { HostFiles } from "../../../src/host/host-files.js";
 import { containsPath, HostError, HostPolicy } from "../../../src/host/host-policy.js";
 import { EXPORT_WIDGET_MIME, EXPORT_WIDGET_URI } from "../../../src/host/export-widget.js";
+import { EXPORT_MAX_FILE_BYTES } from "../../../src/host/export-limits.js";
 
 const digest = (data: Buffer | string) => createHash("sha256").update(data).digest("hex");
 const code = (expected: string) => (error: unknown) => error instanceof HostError && error.code === expected;
@@ -37,7 +40,7 @@ async function fixture(t: TestContext, overrides: Record<string, unknown> = {}) 
 test("Unicode binary export is immutable, resumable and verified per chunk and as a whole", async t => {
   const f = await fixture(t);
   const path = join(f.allowed, "实验 图片与资料.zip");
-  const bytes = randomBytes(EXPORT_CHUNK_BYTES * 2 + 321);
+  const bytes = randomBytes(128 * 1024 + 321);
   await writeFile(path, bytes);
   const meta = await f.exports.create(path);
   assert.equal(meta.filename, "实验 图片与资料.zip");
@@ -85,7 +88,7 @@ test("exports require separate specific roots even when ordinary reads or link f
   await assert.rejects(disabled.create(outside), code("HOST_EXPORT_DISABLED"));
   await assert.rejects(HostPolicy.create({ ...f.config, export_roots: [parse(f.root).root] }, f.policyPath));
   await assert.rejects(HostPolicy.create({ ...f.config, read_roots: [f.outside] }, f.policyPath));
-  await assert.rejects(HostPolicy.create({ ...f.config, export_max_bytes: 129 * 1024 * 1024 }, f.policyPath));
+  await assert.rejects(HostPolicy.create({ ...f.config, export_max_bytes: EXPORT_MAX_FILE_BYTES + 1 }, f.policyPath));
   await assert.rejects(HostPolicy.create({ ...f.config, export_ttl_seconds: 0 }, f.policyPath));
 });
 
@@ -224,6 +227,13 @@ test("real STDIO MCP exports and reconstructs bytes, reads resources and preserv
   assert.equal("download_url" in meta, false);
   assert.equal("content" in meta, false);
   assert.ok(JSON.stringify(exported).length < 3000);
+  const compact = await call("read_export_chunk", { export_id: meta.export_id, content_text: false });
+  const compactPage = compact.structuredContent as ReturnType<HostExports["read"]>;
+  assert.equal(compactPage.bytes_read, 524288);
+  assert.equal(compactPage.content.length, 4 * Math.ceil(compactPage.bytes_read / 3));
+  assert.equal(Buffer.from(compactPage.content, "base64").length, compactPage.bytes_read);
+  assert.ok(JSON.stringify(compact.content).length < 1000);
+  assert.ok(Buffer.byteLength(JSON.stringify(compact)) < 1024 * 1024);
   const parts: Buffer[] = [];
   let offset = 0;
   for (;;) {
@@ -255,4 +265,62 @@ test("real STDIO MCP exports and reconstructs bytes, reads resources and preserv
   assert.equal(audit.includes(bytes.toString("base64")), false);
   assert.equal(audit.includes(meta.export_id), false);
   assert.equal(audit.includes(meta.sha256), false);
+});
+
+test("sparse exports above 128 MiB through the exact decimal 512 MB ceiling retain every byte", { timeout: 120_000 }, async t => {
+  for (const size of [128 * 1024 * 1024 + 17, 512_000_000]) {
+    await t.test(`${size} bytes`, async t => {
+      const f = await fixture(t);
+      assert.equal(f.policy.config.export_max_bytes, 512_000_000);
+      assert.equal(f.policy.config.export_ttl_seconds, 3600);
+      const path = join(f.allowed, "大文件完整性.zip");
+      const handle = await fs.open(path, "wx");
+      try {
+        if (process.platform === "win32") execFileSync("fsutil.exe", ["sparse", "setflag", path], { windowsHide: true, stdio: "pipe" });
+        await handle.truncate(size);
+        await handle.write(Buffer.from("header-marker"), 0, 13, 0);
+        await handle.write(Buffer.from("tail-marker"), 0, 11, size - 11);
+      } finally { await handle.close(); }
+      const expected = createHash("sha256");
+      for await (const part of createReadStream(path)) expected.update(part as Buffer);
+      const meta = await f.exports.create(path);
+      assert.equal(meta.size, size);
+      assert.equal(meta.sha256, expected.digest("hex"));
+      const received = createHash("sha256");
+      let offset = 0, calls = 0;
+      while (offset < size) {
+        const chunk = f.exports.read(meta.export_id, offset);
+        const part = Buffer.from(chunk.content, "base64");
+        assert.equal(digest(part), chunk.chunk_sha256);
+        assert.equal(chunk.bytes_read, part.length);
+        assert.equal(chunk.next_offset, offset + part.length);
+        if (calls === 1) assert.deepEqual(f.exports.read(meta.export_id, offset), chunk);
+        received.update(part); offset = chunk.next_offset; calls++;
+      }
+      assert.equal(received.digest("hex"), meta.sha256);
+      assert.equal(offset, size);
+      assert.equal(calls, Math.ceil(size / 524288));
+      f.exports.release(meta.export_id);
+      const enlarged = await fs.open(path, "r+");
+      try { await enlarged.truncate(512_000_001); } finally { await enlarged.close(); }
+      await assert.rejects(f.exports.create(path), code("HOST_EXPORT_TOO_LARGE"));
+    });
+  }
+});
+
+test("memory pressure and allocation errors release capture reservations for later retries", async t => {
+  const f = await fixture(t);
+  const path = join(f.allowed, "memory.txt");
+  await writeFile(path, "memory");
+  const memory = t.mock.method(process, "availableMemory", () => 0);
+  await assert.rejects(f.exports.create(path), code("HOST_EXPORT_MEMORY"));
+  memory.mock.restore();
+  const originalAlloc = Buffer.alloc;
+  const alloc = t.mock.method(Buffer, "alloc", (...args: Parameters<typeof Buffer.alloc>) => {
+    if (args[0] === 6) throw new RangeError("allocation failed");
+    return originalAlloc(...args);
+  });
+  await assert.rejects(f.exports.create(path), code("HOST_EXPORT_MEMORY"));
+  alloc.mock.restore();
+  for (let i = 0; i < EXPORT_MAX_ACTIVE; i++) await f.exports.create(path);
 });

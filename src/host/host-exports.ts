@@ -4,10 +4,10 @@ import { lstat, open } from "node:fs/promises";
 import { basename, extname, relative } from "node:path";
 
 import { HostError, HostPolicy } from "./host-policy.js";
+import { EXPORT_BUFFER_BYTES, EXPORT_CHUNK_BYTES } from "./export-limits.js";
+export { EXPORT_BUFFER_BYTES, EXPORT_CHUNK_BYTES } from "./export-limits.js";
 
-export const EXPORT_CHUNK_BYTES = 65_536;
 export const EXPORT_RESOURCE_BYTES = 262_144;
-export const EXPORT_BUFFER_BYTES = 128 * 1024 * 1024;
 export const EXPORT_MAX_ACTIVE = 8;
 
 const MIME_TYPES: Record<string, string> = {
@@ -62,6 +62,7 @@ export class HostExports {
   private readonly snapshots = new Map<string, Snapshot>();
   private reservedBytes = 0;
   private reservedCount = 0;
+  private capturingBytes = 0;
   private disposed = false;
 
   constructor(private readonly policy: HostPolicy, private readonly now: () => number = Date.now) {}
@@ -79,9 +80,17 @@ export class HostExports {
     }
     this.reservedCount++;
     this.reservedBytes += size;
+    this.capturingBytes += size;
     let bytes: Buffer | undefined;
     let retained = false;
     try {
+      const requireMemory = () => {
+        if (size > 0 && this.capturingBytes + 64 * 1024 * 1024 > process.availableMemory()) {
+          throw new HostError("HOST_EXPORT_MEMORY", "Insufficient available memory for this export. Release earlier exports or free memory and retry.");
+        }
+      };
+      requireMemory();
+      const hash = createHash("sha256");
       // O_NOFOLLOW covers the final component on POSIX; identity and ancestry
       // checks on both sides of the read also cover Windows and parent changes.
       const handle = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
@@ -93,12 +102,15 @@ export class HostExports {
           throw new HostError("HOST_FILE_CHANGED", "The source path changed while opening the file.");
         }
         unchanged(before, await lstat(path, { bigint: true }));
-        bytes = Buffer.alloc(size);
+        requireMemory();
+        try { bytes = Buffer.alloc(size); }
+        catch { throw new HostError("HOST_EXPORT_MEMORY", "The export buffer could not be allocated. Free memory and retry."); }
         let offset = 0;
         while (offset < size) {
           signal?.throwIfAborted();
           const { bytesRead } = await handle.read(bytes, offset, Math.min(EXPORT_CHUNK_BYTES, size - offset), offset);
           if (bytesRead === 0) throw new HostError("HOST_FILE_CHANGED", "The source was truncated during export.");
+          hash.update(bytes.subarray(offset, offset + bytesRead));
           offset += bytesRead;
         }
         signal?.throwIfAborted();
@@ -114,7 +126,7 @@ export class HostExports {
       const expiresAt = this.now() + this.policy.config.export_ttl_seconds * 1000;
       const metadata: ExportMetadata = {
         export_id: exportId, filename: basename(path), size,
-        sha256: createHash("sha256").update(bytes!).digest("hex"),
+        sha256: hash.digest("hex"),
         mime_type: MIME_TYPES[extname(path).toLowerCase()] ?? "application/octet-stream",
         expires_at: new Date(expiresAt).toISOString(), transport: "mcp_base64",
         resource_uri: `bridge-export://${exportId}`, chunk_bytes: EXPORT_CHUNK_BYTES,
@@ -126,6 +138,7 @@ export class HostExports {
       retained = true;
       return { ...metadata };
     } finally {
+      this.capturingBytes -= size;
       if (!retained) {
         bytes?.fill(0);
         this.reservedCount--;

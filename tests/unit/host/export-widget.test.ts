@@ -4,6 +4,7 @@ import test from "node:test";
 import { runInNewContext } from "node:vm";
 
 import { EXPORT_WIDGET_HTML } from "../../../src/host/export-widget.js";
+import { ExportSha256 } from "../../../src/host/export-sha256.js";
 
 const digest = (value: Buffer) => createHash("sha256").update(value).digest("hex");
 interface Element {
@@ -13,7 +14,7 @@ interface Element {
   removeAttribute(name: string): void;
 }
 
-function widget(bytes: Buffer, overrides: Record<string, unknown> = {}) {
+function widget(bytes: Buffer, overrides: Record<string, unknown> = {}, runtime: Record<string, unknown> = {}) {
   const elements: Record<string, Element> = {};
   for (const id of ["prepare", "pause", "download", "progress", "filename"]) {
     elements[id] = { textContent: "", hidden: false, disabled: true, value: 0, max: 1,
@@ -49,7 +50,7 @@ function widget(bytes: Buffer, overrides: Record<string, unknown> = {}) {
   const script = EXPORT_WIDGET_HTML.match(/<script>([\s\S]*)<\/script>/u)![1]!;
   runInNewContext(script, { window: { openai: api, addEventListener() {} },
     document: { getElementById: (id: string) => elements[id] },
-    crypto: webcrypto, Blob, File, URL: WidgetURL, Uint8Array, atob, setTimeout, clearTimeout });
+    crypto: webcrypto, Blob, File, URL: WidgetURL, Uint8Array, atob, setTimeout, clearTimeout, AbortController, ...runtime });
   return { elements, meta, api, offsets, uploads, localFiles, state: () => state };
 }
 
@@ -69,6 +70,51 @@ test("widget waits for a gesture, verifies binary DOCX bytes and uses real host-
   assert.equal(f.elements.download!.hidden, false);
   assert.equal(f.localFiles.length, 0);
   assert.match(JSON.stringify(f.state()), /authorized-test-file/u);
+});
+
+test("incremental widget SHA-256 matches native hashing across padding and chunk boundaries", () => {
+  for (const length of [0, 1, 55, 56, 63, 64, 65, 127, 128, 129, 524289]) {
+    const bytes = randomBytes(length);
+    for (const chunk of [1, 17, 64, 65537]) {
+      const hash = new ExportSha256();
+      for (let offset = 0; offset < length; offset += chunk) hash.update(bytes.subarray(offset, offset + chunk));
+      assert.equal(hash.digest(), digest(bytes), `${length}/${chunk}`);
+      assert.equal(hash.digest(), digest(bytes));
+    }
+  }
+});
+
+test("widget receives above 128 MiB in 512 KiB chunks without hashing a whole-file ArrayBuffer", { timeout: 120_000 }, async () => {
+  const bytes = Buffer.alloc(128 * 1024 * 1024 + 17, 0x5a);
+  const f = widget(bytes, {}, { crypto: { subtle: {
+    digest: (algorithm: string, data: Uint8Array) => {
+      assert.ok(data.byteLength <= 524288);
+      return webcrypto.subtle.digest(algorithm, data);
+    }
+  } } });
+  f.meta.chunk_bytes = 524288;
+  await f.elements.prepare!.onclick!();
+  assert.equal(f.uploads.length, 1);
+  assert.equal(f.uploads[0]!.size, bytes.length);
+  const hash = createHash("sha256");
+  for await (const part of f.uploads[0]!.stream()) hash.update(part);
+  assert.equal(hash.digest("hex"), digest(bytes));
+  assert.equal(f.offsets.length, Math.ceil(bytes.length / 524288));
+});
+
+test("widget accepts 512000000-byte metadata, rejects one more byte and pauses a pending upload", async () => {
+  const metadata = { export_id: "large", filename: "large.zip", size: 512_000_000, sha256: digest(Buffer.alloc(0)), chunk_bytes: 524288 };
+  const accepted = widget(Buffer.alloc(0), { toolOutput: metadata });
+  assert.equal(accepted.elements.prepare!.disabled, false);
+  const rejected = widget(Buffer.alloc(0), { toolOutput: { ...metadata, size: 512_000_001 } });
+  assert.equal(rejected.elements.prepare!.disabled, true);
+  const f = widget(Buffer.alloc(0), { uploadFile: () => new Promise(() => {}) });
+  const waiting = f.elements.prepare!.onclick!();
+  await new Promise(resolve => setTimeout(resolve, 0));
+  await f.elements.pause!.onclick!();
+  await waiting;
+  assert.equal(f.elements.prepare!.textContent, "继续下载");
+  assert.equal(f.elements.prepare!.disabled, false);
 });
 
 test("widget resumes at the unacknowledged offset after a lost chunk response", async () => {

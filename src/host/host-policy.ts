@@ -2,6 +2,7 @@ import { lstat, readFile, realpath } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, normalize, parse, relative, resolve, sep } from "node:path";
 import { z } from "zod";
+import { EXPORT_MAX_FILE_BYTES, EXPORT_TTL_SECONDS } from "./export-limits.js";
 
 const PolicySchema = z.object({
   version: z.literal(1),
@@ -9,8 +10,8 @@ const PolicySchema = z.object({
   follow_links: z.boolean().default(false),
   read_roots: z.array(z.string().min(1)).default([]),
   export_roots: z.array(z.string().min(1)).default([]),
-  export_max_bytes: z.number().int().min(1).max(128 * 1024 * 1024).default(32 * 1024 * 1024),
-  export_ttl_seconds: z.number().int().min(30).max(3600).default(600),
+  export_max_bytes: z.number().int().min(1).max(EXPORT_MAX_FILE_BYTES).default(EXPORT_MAX_FILE_BYTES),
+  export_ttl_seconds: z.number().int().min(30).max(EXPORT_TTL_SECONDS).default(EXPORT_TTL_SECONDS),
   write_roots: z.array(z.string().min(1)).default([]),
   command_roots: z.array(z.string().min(1)).default([]),
   commands_enabled: z.boolean().default(false),

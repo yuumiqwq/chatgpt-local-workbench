@@ -22,7 +22,7 @@ chatgpt-with-codex exposes durable Codex work, temporary agent execution and opt
 | list_codex_threads | Optional query/cwd/codex_home/cursor/limit/archived; native IDs and titles. |
 | read_host_file | path; optional offset, max_bytes and utf8/base64 encoding. include_sha256 defaults to false; request it once before a replacement, move or deletion. |
 | export_host_file | path inside export_roots; returns immutable transfer metadata and a download widget. No file bytes in the initial response. |
-| read_export_chunk | export_id, offset, max_bytes up to 65,536; Base64 bytes, chunk_sha256, full sha256, size, next_offset and eof. |
+| read_export_chunk | export_id, offset, max_bytes up to 524,288; Base64 bytes, chunk_sha256, full sha256, size, next_offset and eof. Optional content_text=false avoids duplicating bytes outside structuredContent. |
 | release_host_export | export_id; release a buffered export without modifying its source. |
 | list_host_path | path; optional offset/limit. |
 | write_host_text_file | path + content; expected_sha256 for replacement; optional create_parents. |

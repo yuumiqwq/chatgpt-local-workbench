@@ -111,13 +111,18 @@ export function registerHostTools(
     server.registerTool("read_export_chunk", {
       description: "Read an immutable export as Base64 by export_id and byte offset. Decode each chunk separately and concatenate decoded bytes; verify chunk_sha256, then total size and sha256 before attaching. Follow next_offset until eof. Repeating an offset is safe after a lost response. Export IDs expire and do not survive a Bridge restart.",
       inputSchema: { export_id: exportId, offset: z.number().int().min(0).default(0),
-        max_bytes: z.number().int().min(1).max(EXPORT_CHUNK_BYTES).default(EXPORT_CHUNK_BYTES) },
+        max_bytes: z.number().int().min(1).max(EXPORT_CHUNK_BYTES).default(EXPORT_CHUNK_BYTES),
+        content_text: z.boolean().default(true).describe("Set false in widgets to avoid duplicating Base64 in text; structuredContent still contains all bytes.") },
       annotations: { ...readOnly, idempotentHint: true },
       _meta: { ui: { visibility: ["model", "app"] }, "openai/widgetAccessible": true }
-    }, ({ export_id, offset, max_bytes }, { signal }) => safe("read_export_chunk", {}, async () => {
+    }, ({ export_id, offset, max_bytes, content_text }, { signal }) => safe("read_export_chunk", {}, async () => {
       signal.throwIfAborted();
       return exports.read(export_id, offset, max_bytes);
-    }, structured));
+    }, value => {
+      if (content_text) return structured(value);
+      const { content: _bytes, ...metadata } = value;
+      return { ...jsonContent(metadata), structuredContent: value };
+    }));
     server.registerTool("release_host_export", {
       description: "Release one export's buffered bytes after verified receipt or cancellation. Does not modify the source file. Repeating release is safe.",
       inputSchema: { export_id: exportId }, annotations: { ...mutation, idempotentHint: true }
