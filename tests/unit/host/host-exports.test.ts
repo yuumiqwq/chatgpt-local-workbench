@@ -12,7 +12,6 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { EXPORT_CHUNK_BYTES, EXPORT_MAX_ACTIVE, HostExports } from "../../../src/host/host-exports.js";
 import { HostFiles } from "../../../src/host/host-files.js";
 import { containsPath, HostError, HostPolicy } from "../../../src/host/host-policy.js";
-import { EXPORT_WIDGET_MIME, EXPORT_WIDGET_URI } from "../../../src/host/export-widget.js";
 import { EXPORT_MAX_FILE_BYTES } from "../../../src/host/export-limits.js";
 
 const digest = (data: Buffer | string) => createHash("sha256").update(data).digest("hex");
@@ -207,17 +206,22 @@ test("real STDIO MCP exports and reconstructs bytes, reads resources and preserv
   for (const name of ["export_host_file", "read_export_chunk", "release_host_export", "read_host_file", "run_temp"]) {
     assert.ok(tools.some(tool => tool.name === name));
   }
-  assert.equal((tools.find(tool => tool.name === "export_host_file")!._meta?.ui as { resourceUri: string }).resourceUri, EXPORT_WIDGET_URI);
-  assert.equal(tools.find(tool => tool.name === "read_export_chunk")!._meta?.["openai/widgetAccessible"], true);
-  const widget = (await client.readResource({ uri: EXPORT_WIDGET_URI })).contents[0]!;
-  assert.equal(widget.mimeType, EXPORT_WIDGET_MIME);
-  assert.ok("text" in widget);
-  assert.match(widget.text as string, /api\.uploadFile\(file\)/u);
+  for (const name of ["export_host_file", "read_export_chunk", "release_host_export"]) {
+    assert.equal(tools.find(tool => tool.name === name)!._meta, undefined);
+  }
+  assert.equal((await client.listResources()).resources.some(resource => resource.uri.startsWith("ui://")), false);
+  assert.ok((await client.listResourceTemplates()).resourceTemplates.some(resource => resource.uriTemplate === "bridge-export://{export_id}"));
   const call = async (name: string, args: Record<string, unknown>) => {
     const result = await client.callTool({ name, arguments: args });
     assert.notEqual(result.isError, true, JSON.stringify(result));
     return result;
   };
+  const capabilities = await call("host_capabilities", {});
+  const capabilityData = JSON.parse((capabilities.content as { text: string }[])[0]!.text);
+  assert.equal("widget_uri" in capabilityData.file_exports, false);
+  assert.equal(capabilityData.export_max_bytes, 512_000_000);
+  assert.equal(capabilityData.export_ttl_seconds, 3600);
+  assert.equal(capabilityData.file_exports.chunk_bytes, 524_288);
   const exported = await call("export_host_file", { path });
   const meta = exported.structuredContent as unknown as Awaited<ReturnType<HostExports["create"]>>;
   assert.equal(meta.sha256, digest(bytes));
@@ -252,9 +256,18 @@ test("real STDIO MCP exports and reconstructs bytes, reads resources and preserv
   await assert.rejects(client.readResource({ uri: meta.resource_uri }), /HOST_EXPORT_USE_CHUNKS/u);
   const small = join(f.allowed, "笔记.pdf");
   await writeFile(small, "%PDF-1.4\nNon-sensitive export transport fixture\n%%EOF\n");
-  const smallMeta = (await call("export_host_file", { path: small })).structuredContent as unknown as typeof meta;
+  const smallResult = await call("export_host_file", { path: small });
+  const smallMeta = smallResult.structuredContent as unknown as typeof meta;
+  assert.deepEqual(smallResult.content, [
+    { type: "text", text: JSON.stringify(smallMeta) },
+    { type: "resource_link", uri: smallMeta.resource_uri, name: "笔记.pdf", mimeType: "application/pdf",
+      size: smallMeta.size, description: "Authenticated MCP resource, not an HTTPS download. For files above 256 KiB use read_export_chunk." }
+  ]);
   const resource = (await client.readResource({ uri: smallMeta.resource_uri })).contents[0]!;
   assert.ok("blob" in resource);
+  assert.equal(resource.uri, smallMeta.resource_uri);
+  assert.equal(resource.mimeType, "application/pdf");
+  assert.deepEqual(Buffer.from(resource.blob as string, "base64"), await readFile(small));
   assert.equal(digest(Buffer.from(resource.blob as string, "base64")), smallMeta.sha256);
   const legacy = await call("read_host_file", { path: small });
   assert.match(JSON.stringify(legacy), /PDF-1.4/u);

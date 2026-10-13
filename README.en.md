@@ -76,7 +76,7 @@ This is a direct-execution service for trusted personal use. Access to its tools
 
 ## Interfaces and maintenance
 
-The MCP entry point exposes 24 tools when host operations are enabled, 27 with separately authorized `export_roots`, and 14 when host operations are disabled. `export_host_file` delivers verified binary snapshots over MCP and includes a download widget using ChatGPT file APIs when available. See [file delivery and client limitations](docs/file-exports.md), the [tool reference](docs/tools.md), [architecture](docs/architecture.md) and [deployment settings](docs/host-operations.md).
+The MCP entry point exposes 24 tools when host operations are enabled, 27 with separately authorized `export_roots`, and 14 when host operations are disabled. `export_host_file` returns metadata and an MCP resource link for verified binary transfer and delivery through the client's native chat attachments. See [file delivery and client limitations](docs/file-exports.md), the [tool reference](docs/tools.md), [architecture](docs/architecture.md) and [deployment settings](docs/host-operations.md).
 
 Run these checks after changes. Tests build the project and use temporary fixtures or simulated executors without paid model calls; the separate build verifies the final output independently.
 

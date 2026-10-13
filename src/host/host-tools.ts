@@ -8,7 +8,6 @@ import { listCodexProjects, listCodexThreads, type ThreadListQuery } from "./cod
 import { runHostCommand } from "./host-command.js";
 import { HostFiles } from "./host-files.js";
 import { EXPORT_BUFFER_BYTES, EXPORT_CHUNK_BYTES, EXPORT_MAX_ACTIVE, EXPORT_RESOURCE_BYTES, HostExports } from "./host-exports.js";
-import { EXPORT_WIDGET_HTML, EXPORT_WIDGET_MIME, EXPORT_WIDGET_URI } from "./export-widget.js";
 import { HostError, HostPolicy } from "./host-policy.js";
 
 function jsonContent(value: unknown) {
@@ -73,7 +72,7 @@ export function registerHostTools(
     ...policy.config, policy_file: policy.policyPath,
     file_limit_mib: 512, text_write_limit_mib: 2, command_output_limit_bytes: 65_536,
     file_exports: { enabled: policy.config.enabled && policy.config.export_roots.length > 0,
-      transport: "mcp_base64", direct_download: false, widget_uri: EXPORT_WIDGET_URI, chunk_bytes: EXPORT_CHUNK_BYTES,
+      transport: "mcp_base64", direct_download: false, chunk_bytes: EXPORT_CHUNK_BYTES,
       resource_max_bytes: EXPORT_RESOURCE_BYTES, max_active: EXPORT_MAX_ACTIVE,
       total_buffer_bytes: EXPORT_BUFFER_BYTES, lifetime: "until expiry, release or process exit" },
     command_max_seconds: 45, gui_control: false,
@@ -91,14 +90,9 @@ export function registerHostTools(
     const structured = (value: Record<string, unknown>): CallToolResult => ({
       ...jsonContent(value), structuredContent: value
     });
-    server.registerResource("host-export-download", EXPORT_WIDGET_URI, { mimeType: EXPORT_WIDGET_MIME },
-      async () => ({ contents: [{ uri: EXPORT_WIDGET_URI, mimeType: EXPORT_WIDGET_MIME, text: EXPORT_WIDGET_HTML,
-        _meta: { ui: { csp: { connectDomains: [], resourceDomains: [] } },
-          "openai/widgetCSP": { connect_domains: [], resource_domains: [] } } }] }));
     server.registerTool("export_host_file", {
-      description: "Export an authorized local file for delivery to the caller. Takes an absolute path inside export_roots and captures an immutable, expiring snapshot with filename, size, MIME and SHA-256. The download widget transfers bytes on user click, verifies them and uses ChatGPT uploadFile/getFileDownloadUrl when available, with a browser Blob download fallback. The initial result contains metadata only. Clients without widgets can reconstruct via read_export_chunk or resources/read for files up to 256 KiB. The MCP URI itself is not a phone download URL or ChatGPT file_id.",
-      inputSchema: { path: pathSchema }, annotations: { ...readOnly, idempotentHint: false },
-      _meta: { ui: { resourceUri: EXPORT_WIDGET_URI }, "openai/outputTemplate": EXPORT_WIDGET_URI }
+      description: "Export an authorized local file for delivery as a native chat attachment through the client's file facilities. Takes an absolute path inside export_roots and captures an immutable, expiring snapshot with filename, size, MIME and SHA-256. The initial result contains metadata and an MCP resource_link without file bytes. Receive bytes via read_export_chunk, or resources/read for files up to 256 KiB, and verify size and SHA-256 before attaching. The MCP URI itself is not a phone download URL or ChatGPT file_id.",
+      inputSchema: { path: pathSchema }, annotations: { ...readOnly, idempotentHint: false }
     }, ({ path }, { signal }) => safe("export", { path }, () => exports.create(path, signal), value => ({
       structuredContent: { ...value },
       content: [
@@ -112,9 +106,8 @@ export function registerHostTools(
       description: "Read an immutable export as Base64 by export_id and byte offset. Decode each chunk separately and concatenate decoded bytes; verify chunk_sha256, then total size and sha256 before attaching. Follow next_offset until eof. Repeating an offset is safe after a lost response. Export IDs expire and do not survive a Bridge restart.",
       inputSchema: { export_id: exportId, offset: z.number().int().min(0).default(0),
         max_bytes: z.number().int().min(1).max(EXPORT_CHUNK_BYTES).default(EXPORT_CHUNK_BYTES),
-        content_text: z.boolean().default(true).describe("Set false in widgets to avoid duplicating Base64 in text; structuredContent still contains all bytes.") },
-      annotations: { ...readOnly, idempotentHint: true },
-      _meta: { ui: { visibility: ["model", "app"] }, "openai/widgetAccessible": true }
+        content_text: z.boolean().default(true).describe("Set false to avoid duplicating Base64 in text; structuredContent still contains all bytes.") },
+      annotations: { ...readOnly, idempotentHint: true }
     }, ({ export_id, offset, max_bytes, content_text }, { signal }) => safe("read_export_chunk", {}, async () => {
       signal.throwIfAborted();
       return exports.read(export_id, offset, max_bytes);

@@ -21,7 +21,7 @@ chatgpt-with-codex exposes durable Codex work, temporary agent execution and opt
 | list_codex_projects | Optional query/codex_home/cursor/scan_limit/archived; project groups from a bounded history page. |
 | list_codex_threads | Optional query/cwd/codex_home/cursor/limit/archived; native IDs and titles. |
 | read_host_file | path; optional offset, max_bytes and utf8/base64 encoding. include_sha256 defaults to false; request it once before a replacement, move or deletion. |
-| export_host_file | path inside export_roots; returns immutable transfer metadata and a download widget. No file bytes in the initial response. |
+| export_host_file | path inside export_roots; returns immutable transfer metadata and an MCP resource_link for native attachment delivery. No file bytes in the initial response. |
 | read_export_chunk | export_id, offset, max_bytes up to 524,288; Base64 bytes, chunk_sha256, full sha256, size, next_offset and eof. Optional content_text=false avoids duplicating bytes outside structuredContent. |
 | release_host_export | export_id; release a buffered export without modifying its source. |
 | list_host_path | path; optional offset/limit. |
@@ -44,4 +44,4 @@ Codex RPC rejections expose `error.rpc_method`, numeric `error.rpc_error_code` a
 
 DSH supports interruption but not steering. `control_task` must reach the Bridge process that owns the live executor; a different process can read stored status but cannot steer that executor. `WORK_RESULT_WRITE_FAILED` indicates that execution ended but its result could not be persisted; check files and storage before retrying.
 
-Tools exchange JSON text through MCP; file exports also return structuredContent, an MCP resource_link and a downloadable UI resource. See [file exports](file-exports.md) for the widget and binary reconstruction protocol. Obtain IDs from discovery/creation responses, and use one project selector per call to avoid relying on implementation precedence. The complete input schemas are returned by MCP `tools/list`; the repository's `src/work-tools.ts`, `src/host/host-tools.ts` and `src/mcp-stdio.ts` define them.
+Tools exchange JSON text through MCP; file exports also return structuredContent and an MCP resource_link. See [file exports](file-exports.md) for native attachment delivery and the binary reconstruction protocol. Obtain IDs from discovery/creation responses, and use one project selector per call to avoid relying on implementation precedence. The complete input schemas are returned by MCP `tools/list`; the repository's `src/work-tools.ts`, `src/host/host-tools.ts` and `src/mcp-stdio.ts` define them.
