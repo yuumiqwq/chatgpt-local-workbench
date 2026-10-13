@@ -1,4 +1,4 @@
-# chatgpt-with-codex
+# chatgpt-local-workbench
 
 This repository serves a personal workflow: use ChatGPT's chat mode to freely operate your own computer and call different agents as subagents, while communicating only with chat to get things done. A local MCP service sends instructions to local executors and returns progress, results and resumable work records to ChatGPT.
 
@@ -26,8 +26,8 @@ Workspace records identify projects. `project_root` bounds project registration,
 Install Node.js 22 or newer, Git and the executor CLI you intend to use. Configure and authenticate the executor under the account running Bridge. Transport adapters, tunnels and remote authentication services are separate deployments.
 
 ```sh
-git clone https://github.com/yuumiqwq/chatgpt-with-codex.git
-cd chatgpt-with-codex
+git clone https://github.com/yuumiqwq/chatgpt-local-workbench.git
+cd chatgpt-local-workbench
 npm ci
 npm run build
 ```
@@ -46,7 +46,7 @@ To browse and resume native Codex history, enable `workspaces.json.host-policy.j
 Configure an MCP client or tunnel runner to start the STDIO service with absolute paths:
 
 ```sh
-node /absolute/path/to/chatgpt-with-codex/dist/src/mcp-stdio.js /absolute/path/to/workspaces.json
+node /absolute/path/to/chatgpt-local-workbench/dist/src/mcp-stdio.js /absolute/path/to/workspaces.json
 ```
 
 The process waits for MCP requests on standard input/output; it has no interactive terminal UI. `npm run mcp:stdio -- /absolute/path/to/workspaces.json` runs the same entry point.
@@ -90,4 +90,4 @@ npm audit
 
 Pushing source does not deploy a local service. Build an update and arrange its restart after active work has finished; refresh ChatGPT metadata when the tool surface changes. Keep private configuration and state outside the checkout and preserve them during upgrades. See [contributing](CONTRIBUTING.md) and [compatibility](docs/compatibility.md) for development and concurrency limitations.
 
-The repository is named `chatgpt-with-codex`. The npm package, executable, MCP identity and `ENGINEERING_BRIDGE_*` environment variables retain their existing names for installation compatibility. The project derives from [wudy29/engineering-bridge](https://github.com/wudy29/engineering-bridge) and retains its copyright notice under the [MIT license](LICENSE).
+The repository is named `chatgpt-local-workbench`. The npm package, executable, MCP identity and `ENGINEERING_BRIDGE_*` environment variables retain their existing names for installation compatibility. The project derives from [wudy29/engineering-bridge](https://github.com/wudy29/engineering-bridge) and retains its copyright notice under the [MIT license](LICENSE).

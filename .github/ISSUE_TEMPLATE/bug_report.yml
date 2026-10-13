@@ -1,5 +1,5 @@
 name: Bug report
-description: Report a reproducible problem with chatgpt-with-codex
+description: Report a reproducible problem with chatgpt-local-workbench
 title: ""
 labels: ["bug"]
 body:
@@ -55,7 +55,7 @@ body:
   - type: input
     id: bridge_version
     attributes:
-      label: chatgpt-with-codex version or commit
+      label: chatgpt-local-workbench version or commit
       placeholder: "e.g. 1.7.0-local.3 or a commit SHA"
     validations:
       required: true

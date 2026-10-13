@@ -1,6 +1,6 @@
 # Contributing
 
-chatgpt-with-codex connects a ChatGPT chat workflow to local agents and host operations. Keep changes focused on the current interfaces in [docs/tools.md](docs/tools.md), and include migration coverage whenever a persisted schema changes. Preserve existing permission defaults and persistent work semantics during maintenance.
+chatgpt-local-workbench connects a ChatGPT chat workflow to local agents and host operations. Keep changes focused on the current interfaces in [docs/tools.md](docs/tools.md), and include migration coverage whenever a persisted schema changes. Preserve existing permission defaults and persistent work semantics during maintenance.
 
 Workspace configuration defines project identity and registration boundaries. A manual workspace contains `id` and `root`; a `project_root` entry limits paths accepted by `bind_project` and `create_project`. Per-execution write access belongs to `open_work`, `continue_work` and `run_temp`. Bridge file and command operations belong to the adjacent host policy. Do not combine these independent boundaries.
 
@@ -28,4 +28,4 @@ TypeScript checks include unused locals/parameters. CI covers Windows and Linux 
 
 Package versions are read from `package.json` at runtime; update the lockfile with a version change. `npm pack` runs the prepack build unless scripts are explicitly disabled. The package includes compiled runtime modules and current documentation. It does not include tests, private sidecars or an automatic publishing/deployment workflow.
 
-Keep the public repository metadata pointed at [yuumiqwq/chatgpt-with-codex](https://github.com/yuumiqwq/chatgpt-with-codex). Retained package/protocol identifiers and known coordination limits are explained in [compatibility](docs/compatibility.md). Project registration is coordinated through a shared file lock and covered by multi-process tests. Avoid simultaneous native-history execution across independent clients until that separate coordination has been verified.
+Keep the public repository metadata pointed at [yuumiqwq/chatgpt-local-workbench](https://github.com/yuumiqwq/chatgpt-local-workbench). Retained package/protocol identifiers and known coordination limits are explained in [compatibility](docs/compatibility.md). Project registration is coordinated through a shared file lock and covered by multi-process tests. Avoid simultaneous native-history execution across independent clients until that separate coordination has been verified.

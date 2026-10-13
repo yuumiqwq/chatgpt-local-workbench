@@ -1,4 +1,4 @@
-# chatgpt-with-codex
+# chatgpt-local-workbench
 
 此仓库面向个人使用需求：希望chat模式能够自由控制自己的电脑，自由调用本地agent作为子代理，无需经过任何审批，并且针对长时间工作时没有完成就提前终止生命周期的情况做了优化。用户只与 chat 模式交流就能完成各种事项。
 
@@ -37,8 +37,8 @@ flowchart LR
 需要 Node.js 22 或更高版本、Git，以及要使用的执行器 CLI。执行器应在运行 Bridge 的账户下完成本机配置和认证；部署适配器、隧道及认证服务不包含在本仓库内。
 
 ```sh
-git clone https://github.com/yuumiqwq/chatgpt-with-codex.git
-cd chatgpt-with-codex
+git clone https://github.com/yuumiqwq/chatgpt-local-workbench.git
+cd chatgpt-local-workbench
 npm ci
 npm run build
 ```
@@ -57,7 +57,7 @@ npm run build
 将以下启动方式交给支持 STDIO 的 MCP 客户端或隧道运行器，并使用构建文件和配置文件的绝对路径：
 
 ```sh
-node /absolute/path/to/chatgpt-with-codex/dist/src/mcp-stdio.js /absolute/path/to/workspaces.json
+node /absolute/path/to/chatgpt-local-workbench/dist/src/mcp-stdio.js /absolute/path/to/workspaces.json
 ```
 
 服务通过标准输入输出等待 MCP 请求，直接在终端启动时不会显示交互界面。`npm run mcp:stdio -- /absolute/path/to/workspaces.json` 提供相同入口。
@@ -102,4 +102,4 @@ npm audit
 
 源码推送不会自动部署本机服务。更新运行版本应在现有任务结束后构建并安排服务重启，工具元数据有变化时还需刷新 ChatGPT 连接；配置和状态应保留在仓库外，并在更新中原样保留。开发与并发限制见[维护说明](CONTRIBUTING.md)及[兼容性说明](docs/compatibility.md)。
 
-仓库名称为 `chatgpt-with-codex`，npm 包名、可执行命令、MCP 服务标识和 `ENGINEERING_BRIDGE_*` 环境变量仍保留原名，以便现有安装继续工作。项目基于 [wudy29/engineering-bridge](https://github.com/wudy29/engineering-bridge) 发展，保留原作者版权声明并采用 [MIT 许可证](LICENSE)。
+仓库名称为 `chatgpt-local-workbench`，npm 包名、可执行命令、MCP 服务标识和 `ENGINEERING_BRIDGE_*` 环境变量仍保留原名，以便现有安装继续工作。项目基于 [wudy29/engineering-bridge](https://github.com/wudy29/engineering-bridge) 发展，保留原作者版权声明并采用 [MIT 许可证](LICENSE)。

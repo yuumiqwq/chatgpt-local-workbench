@@ -23,7 +23,7 @@ A generic STDIO MCP client configuration is shown below. Replace the command and
     "engineering-bridge": {
       "command": "/absolute/path/to/node",
       "args": [
-        "/absolute/path/to/chatgpt-with-codex/dist/src/mcp-stdio.js",
+        "/absolute/path/to/chatgpt-local-workbench/dist/src/mcp-stdio.js",
         "/absolute/path/to/private/workspaces.json"
       ],
       "env": {

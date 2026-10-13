@@ -1,6 +1,6 @@
 # Durable work and temporary execution
 
-chatgpt-with-codex separates an ongoing work from each execution performed for it. The caller chooses the work, declares completion and selects retention operations; Bridge stores and carries out those decisions without classifying natural-language goals into permanent categories.
+chatgpt-local-workbench separates an ongoing work from each execution performed for it. The caller chooses the work, declares completion and selects retention operations; Bridge stores and carries out those decisions without classifying natural-language goals into permanent categories.
 
 ## Choosing a work
 

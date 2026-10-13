@@ -1,6 +1,6 @@
 # Compatibility and maintenance limits
 
-The repository is `chatgpt-with-codex`. Existing installations continue to use the identifiers below; changing a repository URL does not require moving a local checkout or a Codex profile.
+The repository is `chatgpt-local-workbench`. Existing installations continue to use the identifiers below; changing a repository URL does not require moving a local checkout or a Codex profile.
 
 ## Stable installation identifiers
 

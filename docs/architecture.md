@@ -1,6 +1,6 @@
 # Architecture
 
-chatgpt-with-codex exposes a local STDIO MCP server. ChatGPT or another MCP client owns the conversational workflow; remote transport and authentication are supplied by the deployment, outside this repository.
+chatgpt-local-workbench exposes a local STDIO MCP server. ChatGPT or another MCP client owns the conversational workflow; remote transport and authentication are supplied by the deployment, outside this repository.
 
 The MCP entry point builds a workspace registry, host policy and WorkService. The workspace registry stores project identity, root and manual/managed source only. `project_root` entries define where onboarding may register projects; they do not grant write access. Managed workspace catalog v2 stores only stable IDs and roots. Loading v1 migrates it atomically without changing either value.
 

@@ -4,11 +4,11 @@
   "description": "Let ChatGPT chat coordinate local agents and computer tasks through MCP.",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/yuumiqwq/chatgpt-with-codex.git"
+    "url": "git+https://github.com/yuumiqwq/chatgpt-local-workbench.git"
   },
-  "homepage": "https://github.com/yuumiqwq/chatgpt-with-codex#readme",
+  "homepage": "https://github.com/yuumiqwq/chatgpt-local-workbench#readme",
   "bugs": {
-    "url": "https://github.com/yuumiqwq/chatgpt-with-codex/issues"
+    "url": "https://github.com/yuumiqwq/chatgpt-local-workbench/issues"
   },
   "type": "module",
   "files": [

@@ -1,6 +1,6 @@
 # Threat model
 
-chatgpt-with-codex assumes a trusted user controls the local runtime and authorizes the connected ChatGPT session. It is not a multi-tenant server, and an authorized full-access invocation has the powers of the operating system account running the executor.
+chatgpt-local-workbench assumes a trusted user controls the local runtime and authorizes the connected ChatGPT session. It is not a multi-tenant server, and an authorized full-access invocation has the powers of the operating system account running the executor.
 
 ## Trust boundaries
 

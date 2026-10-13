@@ -1,6 +1,6 @@
 # Current MCP tools
 
-chatgpt-with-codex exposes durable Codex work, temporary agent execution and optional host operations. See [work management](work-management.md) for lifecycle, default full access and retention semantics.
+chatgpt-local-workbench exposes durable Codex work, temporary agent execution and optional host operations. See [work management](work-management.md) for lifecycle, default full access and retention semantics.
 
 | Tool | Inputs / purpose |
 | --- | --- |
