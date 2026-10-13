@@ -8,6 +8,9 @@ const PolicySchema = z.object({
   enabled: z.boolean().default(false),
   follow_links: z.boolean().default(false),
   read_roots: z.array(z.string().min(1)).default([]),
+  export_roots: z.array(z.string().min(1)).default([]),
+  export_max_bytes: z.number().int().min(1).max(128 * 1024 * 1024).default(32 * 1024 * 1024),
+  export_ttl_seconds: z.number().int().min(30).max(3600).default(600),
   write_roots: z.array(z.string().min(1)).default([]),
   command_roots: z.array(z.string().min(1)).default([]),
   commands_enabled: z.boolean().default(false),
@@ -88,6 +91,7 @@ export class HostPolicy {
     readonly config: HostPolicyConfig,
     readonly policyPath: string,
     private readonly canonicalReadRoots: readonly string[],
+    private readonly canonicalExportRoots: readonly string[],
     private readonly canonicalWriteRoots: readonly string[],
     private readonly canonicalCommandRoots: readonly string[],
     private readonly protectedPaths: readonly string[],
@@ -122,6 +126,19 @@ export class HostPolicy {
       canonicalRoots(config.read_roots), canonicalRoots(config.write_roots),
       canonicalRoots(config.command_roots)
     ]);
+    const exportRoots: string[] = [];
+    for (const root of config.export_roots) {
+      const path = absolutePath(root);
+      // Export authorization is independent of ordinary read/link settings.
+      await checkAncestors(path);
+      if (!(await lstat(path)).isDirectory()) throw new Error("Export roots must be existing directories.");
+      const canonical = await realpath(path);
+      if (relative(parse(canonical).root, canonical) === "" ||
+          !readRoots.some(readRoot => containsPath(readRoot, canonical))) {
+        throw new Error("Export roots must be specific directories within read_roots, never an entire volume.");
+      }
+      exportRoots.push(canonical);
+    }
     for (const home of config.codex_homes) {
       absolutePath(home);
       if (!config.follow_links) await checkAncestors(home);
@@ -147,13 +164,35 @@ export class HostPolicy {
     // A short alias of the policy filename does not extend to its audit siblings.
     const configuredAuditPrefix = join(await existingCanonicalPath(dirname(checkedPolicyPath)),
       parse(checkedPolicyPath).base + ".audit");
-    return new HostPolicy(config, checkedPolicyPath, readRoots, writeRoots, commandRoots,
+    return new HostPolicy(config, checkedPolicyPath, readRoots, exportRoots, writeRoots, commandRoots,
       [...protectedPaths, ...canonicalProtectedPaths], canonicalPolicyPath,
       [configuredAuditPrefix, canonicalPolicyPath + ".audit"], credentialPaths);
   }
 
   isWriteRoot(canonicalPath: string): boolean {
     return this.canonicalWriteRoots.some(root => relative(root, canonicalPath) === "");
+  }
+
+  async checkExport(pathValue: string): Promise<string> {
+    if (this.canonicalExportRoots.length === 0) {
+      throw new HostError("HOST_EXPORT_DISABLED", "Configure export_roots to authorize file delivery.");
+    }
+    await checkAncestors(absolutePath(pathValue));
+    const canonical = await this.check(pathValue, "read");
+    await checkAncestors(canonical);
+    const name = parse(canonical).base;
+    const parts = canonical.toLowerCase().split(/[\\/]/u);
+    const secret = parts.some(part => [".git", ".codex", ".gnupg", ".kube"].includes(part)) ||
+      /^(?:auth\.json|credentials(?:\..*)?|tokens?(?:\..*)?|secrets?(?:\..*)?|id_(?:rsa|dsa|ecdsa|ed25519)(?:\..*)?|\.npmrc|\.netrc|\.git-credentials)$/iu.test(name) ||
+      /\.(?:pem|key|p12|pfx|kdbx)$/iu.test(name);
+    const comparison = process.platform === "win32" ? canonical.toLowerCase() : canonical;
+    if (!this.canonicalExportRoots.some(root => containsPath(root, canonical)) || secret ||
+        this.protectedPaths.some(root => containsPath(root, canonical)) ||
+        relative(this.canonicalPolicyPath, canonical) === "" ||
+        this.auditPrefixes.some(prefix => comparison.startsWith(process.platform === "win32" ? prefix.toLowerCase() : prefix))) {
+      throw new HostError("HOST_EXPORT_DENIED", "Only authorized, non-credential files inside export_roots can be exported.");
+    }
+    return canonical;
   }
 
   async check(pathValue: string, access: "read" | "write" | "command"): Promise<string> {

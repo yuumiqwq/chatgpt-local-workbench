@@ -60,6 +60,8 @@ Replace every directory with an existing local path. `codex_homes` identifies ac
 | --- | --- |
 | `enabled` | Enables the optional host/history tool group. Without it the MCP entry point exposes 14 tools instead of 24. |
 | `read_roots` | Paths available to file reads, arbitrary `cwd` selection and native-history project validation. |
+| `export_roots` | Explicit file-delivery directories within read_roots. Empty by default; whole volumes and linked directories are rejected. Enables three export tools and the download widget. |
+| `export_max_bytes`, `export_ttl_seconds` | Per-export size limit, default 32 MiB, maximum 128 MiB; lifetime 30–3600 seconds, default 600. See [file delivery](file-exports.md). |
 | `write_roots` | Paths available to Bridge file mutations. This does not select executor access. |
 | `command_roots`, `commands_enabled` | Opt-in command execution and allowed starting directories. Commands can access other paths under the OS account. |
 | `codex_homes` | Profiles used for history listing and verified rollout lookup. The first is the default home for new work. |

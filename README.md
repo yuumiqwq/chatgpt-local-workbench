@@ -74,6 +74,7 @@ ChatGPT 可以通过 Secure MCP Tunnel 连接此 STDIO 服务，也可以连接�
 | 临时检查或修改 | `run_temp` 指定项目、指令和执行器，通过返回的 `task_id` 等待结果。只读检查显式传入 `access: "read-only"`。 |
 | 保存已完成事项 | 检查执行结果和实际产物后调用 `finish_work`，写入摘要及文件路径、提交等引用；以后仍可重新打开。 |
 | 主机文件操作 | `host_capabilities` 查看范围；普通阅读按页读取，准备替换、移动或删除时，通过 `read_host_file` 的 `include_sha256: true` 获取一次校验摘要。 |
+| 回传文件 | 在独立的 `export_roots` 中生成文件，调用 `export_host_file` 并在下载组件中点击“准备下载”；组件通过 MCP 接收和校验文件，随后尝试使用 ChatGPT 文件接口生成下载链接。客户端支持情况与分块接收方法见[文件回传](docs/file-exports.md)。 |
 
 `wait_task` 默认单次最多等待 300 秒，返回 `ready=false` 时需要继续等待；最大等待时间可配置，且不会影响执行器自身的存活判定。一轮执行完成只表示执行器结束，事项完成由调用方结合结果判断；中断、超时或对话停止都不会撤销已经写入的文件。更多状态与保留规则见[工作管理](docs/work-management.md)。
 
@@ -87,7 +88,7 @@ Codex 的 `read-only` 使用原生只读策略并关闭网络，DSH 的同名选
 
 ## 接口与维护
 
-当前 MCP 入口在 host policy 开启时提供 24 个工具，关闭时提供 14 个工具。完整参数见[工具清单](docs/tools.md)，各模块关系见[架构](docs/architecture.md)，配置及环境变量见[部署配置](docs/host-operations.md)。
+当前 MCP 入口在 host policy 开启时提供 24 个工具，另外配置 `export_roots` 后提供 27 个工具，关闭 host policy 时提供 14 个工具。完整参数见[工具清单](docs/tools.md)，各模块关系见[架构](docs/architecture.md)，配置及环境变量见[部署配置](docs/host-operations.md)。
 
 修改后执行以下验证。`npm test` 自带一次构建，额外的 `build` 可独立确认最终输出；测试使用临时目录和模拟执行器，不需要运行付费模型。
 

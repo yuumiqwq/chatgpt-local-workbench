@@ -21,6 +21,9 @@ chatgpt-with-codex exposes durable Codex work, temporary agent execution and opt
 | list_codex_projects | Optional query/codex_home/cursor/scan_limit/archived; project groups from a bounded history page. |
 | list_codex_threads | Optional query/cwd/codex_home/cursor/limit/archived; native IDs and titles. |
 | read_host_file | path; optional offset, max_bytes and utf8/base64 encoding. include_sha256 defaults to false; request it once before a replacement, move or deletion. |
+| export_host_file | path inside export_roots; returns immutable transfer metadata and a download widget. No file bytes in the initial response. |
+| read_export_chunk | export_id, offset, max_bytes up to 65,536; Base64 bytes, chunk_sha256, full sha256, size, next_offset and eof. |
+| release_host_export | export_id; release a buffered export without modifying its source. |
 | list_host_path | path; optional offset/limit. |
 | write_host_text_file | path + content; expected_sha256 for replacement; optional create_parents. |
 | copy_file | source + destination; optional create_parents. |
@@ -29,7 +32,7 @@ chatgpt-with-codex exposes durable Codex work, temporary agent execution and opt
 | run_host_command | absolute executable + args + cwd; timeout_seconds 1–45. |
 | reload_workspace_config | Validate/reload when no executions are pending. |
 
-There are 24 tools with optional host operations enabled, 14 without them. `list_workspaces`, `bind_project` and `create_project` return project identity fields without permission metadata. Host files retain their configured roots and content hash checks; enabled host commands and full-access Codex or DSH executions use OS account privileges.
+There are 24 tools with optional host operations enabled, 27 when export_roots is also configured, and 14 without host operations. `list_workspaces`, `bind_project` and `create_project` return project identity fields without permission metadata. Host files retain their configured roots and content hash checks; enabled host commands and full-access Codex or DSH executions use OS account privileges.
 
 `read_host_file` reads only the requested page by default and omits `sha256`. Set `include_sha256: true` when obtaining a content hash for `expected_sha256`; this explicitly scans the whole file. UTF-8 pages may be shorter than `max_bytes` to keep characters intact; follow the returned `next_offset`. A page must fit at least one character, so `max_bytes` of at least 4 supports every UTF-8 code point. Base64 pagination retains exact byte boundaries.
 
@@ -41,4 +44,4 @@ Codex RPC rejections expose `error.rpc_method`, numeric `error.rpc_error_code` a
 
 DSH supports interruption but not steering. `control_task` must reach the Bridge process that owns the live executor; a different process can read stored status but cannot steer that executor. `WORK_RESULT_WRITE_FAILED` indicates that execution ended but its result could not be persisted; check files and storage before retrying.
 
-All tools exchange JSON text through MCP. Obtain IDs from discovery/creation responses, and use one project selector per call to avoid relying on implementation precedence. The complete input schemas are returned by MCP `tools/list`; the repository's `src/work-tools.ts`, `src/host/host-tools.ts` and `src/mcp-stdio.ts` define them.
+Tools exchange JSON text through MCP; file exports also return structuredContent, an MCP resource_link and a downloadable UI resource. See [file exports](file-exports.md) for the widget and binary reconstruction protocol. Obtain IDs from discovery/creation responses, and use one project selector per call to avoid relying on implementation precedence. The complete input schemas are returned by MCP `tools/list`; the repository's `src/work-tools.ts`, `src/host/host-tools.ts` and `src/mcp-stdio.ts` define them.
