@@ -354,8 +354,9 @@ export class WorkService {
     for (;;) {
       signal?.throwIfAborted();
       const view = this.taskView(id);
-      if (!view || view.ready || performance.now() >= end) return view;
-      await sleep(100, undefined, signal ? { signal } : {});
+      const remaining = end - performance.now();
+      if (!view || view.ready || remaining <= 0) return view;
+      await sleep(Math.min(500, remaining), undefined, signal ? { signal } : {});
     }
   }
   async controlTask(id: unknown, action: "steer" | "interrupt", instruction?: string) {

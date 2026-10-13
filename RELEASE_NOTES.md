@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Poll waiting tasks every 500 ms instead of 100 ms to reduce repeated registry reads, while respecting the remaining timeout and cancellation signal.
 - Coordinate managed workspace registration and legacy migration across Bridge processes with a shared file lock. Preserve existing IDs and other processes' records, reusing the work registry's atomic JSON writer and removing the redundant catalog write queue.
 - Persist successful native unarchive transitions before session lookup, so overlapping status queries or a failed lookup cannot restore an obsolete archived flag.
 - Upgrade the MCP SDK to `^1.32.1` and refresh affected transitive dependencies to patched compatible versions. Preserve existing tool interfaces and permission settings.
