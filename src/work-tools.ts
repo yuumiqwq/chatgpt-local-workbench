@@ -3,6 +3,7 @@ import { z } from "zod";
 import { HostError } from "./host/host-policy.js";
 import { serializeError } from "./core/errors.js";
 import { WorkService } from "./tasks/work-service.js";
+import { CONNECTION_RECOVERY_INSTRUCTIONS } from "./server-instructions.js";
 
 export function registerWorkTools(server: McpServer, works: WorkService) {
   const id = z.string().uuid(), text = z.string().min(1);
@@ -29,11 +30,11 @@ export function registerWorkTools(server: McpServer, works: WorkService) {
       cwd: text.optional(), name: text.max(256).optional(), access: access.optional() }
   }, args => safe(() => works.open(args)));
   server.registerTool("continue_work", {
-    description: "Execute a turn in a durable work, reusing its native Codex UUID and history. Default access is danger-full-access: the current OS account can edit files, write Git metadata and access the network without an extra approval prompt. Select read-only for analysis that must not edit files. Edits happen immediately and stopping does not undo them. Returns task_id; call wait_task again when ready=false until the run finishes. A completed run does not mark the work complete. Bridge coordinates its own executions only; other clients' activity is unknown.",
+    description: `Execute a turn in a durable work, reusing its native Codex UUID and history. Default access is danger-full-access: the current OS account can edit files, write Git metadata and access the network without an extra approval prompt. Select read-only for analysis that must not edit files. Edits happen immediately and stopping does not undo them. Returns task_id; after a successful ready=false response, call wait_task again until the run finishes. A completed run does not mark the work complete. Bridge coordinates its own executions only; other clients' activity is unknown. ${CONNECTION_RECOVERY_INSTRUCTIONS}`,
     inputSchema: { work_id: id, ...turn }
   }, ({ work_id, ...args }) => safe(() => works.continue(work_id, args)));
   server.registerTool("run_temp", {
-    description: "Run any one-off instruction, including inspection or file editing, without persisting a native Codex conversation. Supply work_id, workspace_id or cwd. Optional work association does not reuse its history or access setting. Codex uses ephemeral app-server mode; DSH uses its headless executor. Both accept read-only or danger-full-access, defaulting to danger-full-access with OS account privileges and no extra approval prompt. Access is passed to the selected executor's native permission policy. Saves the result separately under the registry's .results directory, subject to retention. Save lasting artifacts in the project and reference them in finish_work. wait_task cancellation does not stop execution.",
+    description: `Run any one-off instruction, including inspection or file editing, without persisting a native Codex conversation. Supply work_id, workspace_id or cwd. Optional work association does not reuse its history or access setting. Codex uses ephemeral app-server mode; DSH uses its headless executor. Both accept read-only or danger-full-access, defaulting to danger-full-access with OS account privileges and no extra approval prompt. Access is passed to the selected executor's native permission policy. Saves the result separately under the registry's .results directory, subject to retention. Save lasting artifacts in the project and reference them in finish_work. wait_task cancellation does not stop execution. ${CONNECTION_RECOVERY_INSTRUCTIONS}`,
     inputSchema: { work_id: id.optional(), workspace_id: text.optional(), cwd: text.optional(),
       executor: z.enum(["codex", "dsh"]).default("codex"), ...turn }
   }, args => safe(() => works.temp(args)));

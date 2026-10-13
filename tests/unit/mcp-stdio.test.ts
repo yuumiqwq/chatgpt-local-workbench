@@ -73,6 +73,22 @@ test("MCP exposes unified work operations and rejects removed APIs", async t => 
     const tools=(await client.listTools()).tools;
     assert.ok(tools.find(tool => tool.name === "wait_task")?.description?.includes(instructions));
     assert.equal(tools.filter(tool => tool.description?.includes(instructions)).length, 1);
+    // Verify the guidance actually reaches model-visible STDIO discovery,
+    // including start tools whose response may have been lost in transit.
+    for (const name of ["wait_task", "continue_work", "run_temp"]) {
+      const description = tools.find(tool => tool.name === name)?.description;
+      assert.ok(description, name);
+      assert.match(description, /After 3 consecutive Bridge connection interruptions/u);
+      assert.match(description, /request timeouts without a valid response/u);
+      assert.match(description, /stop automatic retries and polling across all Bridge tools/u);
+      assert.match(description, /ready=false is normal waiting and resets this failure count/u);
+      assert.match(description, /verified completed work, unfinished items/u);
+      assert.match(description, /work_id\/task_id\/thread_id/u);
+      assert.match(description, /reply '继续'/u);
+      assert.match(description, /one read-only check of the original task/u);
+      assert.match(description, /same work_id and original thread_id/u);
+      assert.match(description, /does not cancel a running task/u);
+    }
     for (const name of ["open_work","list_work","continue_work","run_temp","finish_work","manage_work","work_retention"]) {
       assert.ok(tools.some(tool=>tool.name===name));
     }
