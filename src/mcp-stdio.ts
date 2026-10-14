@@ -13,7 +13,7 @@ import type { ExecutorFactory } from "./tasks/execution-types.js";
 import { CodexExecutor } from "./executors/codex-executor.js";
 import { DshExecutor } from "./executors/dsh-executor.js";
 import { VERSION } from "./version.js";
-import { LONG_TASK_INSTRUCTIONS } from "./server-instructions.js";
+import { SERVER_INSTRUCTIONS } from "./server-instructions.js";
 import { CoreError, serializeError } from "./core/errors.js";
 import { registerTaskResultTools } from "./task-result-tools.js";
 import { HostError, HostPolicy } from "./host/host-policy.js";
@@ -128,7 +128,7 @@ async function main(): Promise<void> {
       }
     };
   const server = new McpServer({ name: "engineering-bridge", version: VERSION }, {
-    instructions: LONG_TASK_INSTRUCTIONS
+    instructions: SERVER_INSTRUCTIONS
   });
 
   const hostPolicy = await HostPolicy.load(resolve(configPath) + ".host-policy.json");
