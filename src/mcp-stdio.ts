@@ -13,6 +13,10 @@ import type { ExecutorFactory } from "./tasks/execution-types.js";
 import { CodexExecutor } from "./executors/codex-executor.js";
 import { DshExecutor } from "./executors/dsh-executor.js";
 import { VERSION } from "./version.js";
+import { loadPhoneConfig } from "./phone/config.js";
+import { RealAdb } from "./phone/adb.js";
+import { PhoneService } from "./phone/service.js";
+import { PHONE_INSTRUCTIONS, registerPhoneTools } from "./phone/tools.js";
 import { SERVER_INSTRUCTIONS } from "./server-instructions.js";
 import { CoreError, serializeError } from "./core/errors.js";
 import { registerTaskResultTools } from "./task-result-tools.js";
@@ -127,9 +131,12 @@ async function main(): Promise<void> {
         case "dsh": return new DshExecutor(workspaceRoot);
       }
     };
+  const phoneConfig = await loadPhoneConfig(resolve(configPath) + ".phone.json");
+  const phone = phoneConfig ? new PhoneService(phoneConfig, new RealAdb(phoneConfig)) : undefined;
   const server = new McpServer({ name: "engineering-bridge", version: VERSION }, {
-    instructions: SERVER_INSTRUCTIONS
+    instructions: SERVER_INSTRUCTIONS + (phone ? `\n\n${PHONE_INSTRUCTIONS}` : "")
   });
+  if (phone) registerPhoneTools(server, phone);
 
   const hostPolicy = await HostPolicy.load(resolve(configPath) + ".host-policy.json");
   const works = new WorkService(resolve(configPath) + ".work-items.json", registry, executorFactory, hostPolicy);
@@ -144,6 +151,7 @@ async function main(): Promise<void> {
   };
   setInterval(() => { void sweep(); }, 3_600_000).unref();
   registerHostTools(server, hostPolicy, {
+    ...(phone ? { withCommand: <T>(operation: () => Promise<T>) => phone.maintenanceCommand(operation) } : {}),
     validateText: (path, content) => {
       if (relative(canonicalConfigPath, path) === "") parseWorkspaceConfig(content);
     },

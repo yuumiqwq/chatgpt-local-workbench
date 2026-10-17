@@ -14,6 +14,7 @@ For a configuration named `workspaces.json`, Bridge uses these adjacent paths:
 | `workspaces.json.work-items.json` | Durable work metadata, run status and retention settings. |
 | `workspaces.json.work-items.json.results/` | Retained execution outputs and diagnostics. |
 | `workspaces.json.host-policy.json.audit.jsonl` | Host operation names, paths and status, with one rotated `.previous` file. |
+| `workspaces.json.phone.json` | Optional, explicitly enabled Android module; absent/disabled adds no tools. See [Legion deployment](phone-legion-deployment.md). |
 
 A generic STDIO MCP client configuration is shown below. Replace the command and both arguments with real absolute paths; use the client's own environment configuration if its syntax differs.
 

@@ -36,6 +36,7 @@ export function registerHostTools(
     validateText?: (path: string, content: string) => void;
     reloadWorkspaces?: () => Promise<unknown>;
     queryThreads?: ThreadListQuery;
+    withCommand?: <T>(operation: () => Promise<T>) => Promise<T>;
   } = {}
 ) {
   const files = new HostFiles(policy);
@@ -211,7 +212,10 @@ export function registerHostTools(
       cwd: pathSchema, timeout_seconds: z.number().min(1).max(45).default(25) },
     annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true }
   }, ({ executable, args, cwd, timeout_seconds }, { signal }) => safe("command", { executable, cwd },
-    () => runHostCommand(policy, executable, args, cwd, timeout_seconds, signal)));
+    () => {
+      const command = () => runHostCommand(policy, executable, args, cwd, timeout_seconds, signal);
+      return options.withCommand ? options.withCommand(command) : command();
+    }));
 
 
 

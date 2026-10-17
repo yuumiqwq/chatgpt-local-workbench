@@ -1,0 +1,10 @@
+{
+  "enabled": false,
+  "hostname": "LAPTOP-NHHRR3GO",
+  "adb_path": "C:\\Users\\REPLACE_WITH_VERIFIED_PROFILE\\AppData\\Local\\CloudPhoneServer\\scrcpy-win64-v5.0.1\\adb.exe",
+  "serial": "AYCVVB2B09005827",
+  "state_dir": "E:\\LocalWorkbenchPrivate\\phone-AYCVVB2B09005827",
+  "lease_seconds": 60,
+  "frame_seconds": 10,
+  "ime_enabled": false
+}

@@ -15,6 +15,9 @@
     "dist/src/**",
     "config/workspaces.example.json",
     "config/host-policy.example.json",
+    "config/phone.example.json",
+    "android/workbench-ime/**",
+    "scripts/legion-phone-check.mjs",
     "docs/*.md",
     "README.md",
     "README.en.md",
@@ -52,6 +55,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.32.1",
+    "sharp": "0.34.5",
     "zod": "^3.25.76"
   }
 }
