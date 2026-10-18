@@ -11,6 +11,7 @@ For a configuration named `workspaces.json`, Bridge uses these adjacent paths:
 | `workspaces.json` | Manual project IDs/roots and optional `project_root` onboarding boundaries. |
 | `workspaces.json.managed-workspaces.json` | Automatically registered project IDs and roots. |
 | `workspaces.json.host-policy.json` | Optional host capabilities and native history discovery policy. |
+| `workspaces.json.identity.json` | Optional hostname-validated display name and deployment instructions. See [host identity](host-identity.md). |
 | `workspaces.json.work-items.json` | Durable work metadata, run status and retention settings. |
 | `workspaces.json.work-items.json.results/` | Retained execution outputs and diagnostics. |
 | `workspaces.json.host-policy.json.audit.jsonl` | Host operation names, paths and status, with one rotated `.previous` file. |
@@ -99,7 +100,7 @@ Only allowlisted environment variables reach executor children. Arbitrary provid
 
 ## Updating and troubleshooting
 
-`reload_workspace_config` validates and reloads project identities when no known executions are pending. It does not reload host policy. Changing host policy or replacing running code requires an operator-arranged restart after active work ends; pushing Git commits has no deployment effect.
+`reload_workspace_config` validates and reloads project identities when no known executions are pending. It does not reload host policy or host identity. Changing either sidecar or replacing running code requires an operator-arranged restart after active work ends; pushing Git commits has no deployment effect.
 
 After a tool schema update, refresh the ChatGPT connection and start a new chat. First inspect `host_capabilities` and `list_workspaces` to distinguish a connection problem from a project or permission problem.
 

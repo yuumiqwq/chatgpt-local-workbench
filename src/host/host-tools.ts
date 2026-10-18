@@ -1,8 +1,10 @@
 import { appendFile, rename, stat } from "node:fs/promises";
+import { hostname } from "node:os";
 import { ResourceTemplate, type McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { ErrorCode, McpError, type CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { CoreError, serializeError } from "../core/errors.js";
+import type { HostIdentity } from "../host-identity.js";
 
 import { listCodexProjects, listCodexThreads, type ThreadListQuery } from "./codex-thread-list.js";
 import { runHostCommand } from "./host-command.js";
@@ -33,12 +35,14 @@ export function registerHostTools(
   server: McpServer,
   policy: HostPolicy,
   options: {
+    identity?: HostIdentity;
     validateText?: (path: string, content: string) => void;
     reloadWorkspaces?: () => Promise<unknown>;
     queryThreads?: ThreadListQuery;
     withCommand?: <T>(operation: () => Promise<T>) => Promise<T>;
   } = {}
 ) {
+  const identity = options.identity ?? { hostname: hostname() };
   const files = new HostFiles(policy);
   const audit = new HostAudit(policy.policyPath + ".audit.jsonl");
   const safe = async <T>(operation: string, paths: Record<string, string>, work: () => Promise<T>,
@@ -70,6 +74,8 @@ export function registerHostTools(
     description: "Read the administrator-configured host capabilities. File roots constrain file tools. Enabled host commands run with the current OS account's privileges; command_roots constrain only the starting directory, not process access. Desktop GUI control is not provided.",
     inputSchema: {}, annotations: readOnly
   }, () => jsonContent({
+    hostname: identity.hostname,
+    ...(identity.display_name === undefined ? {} : { display_name: identity.display_name }),
     ...policy.config, policy_file: policy.policyPath,
     file_limit_mib: 512, text_write_limit_mib: 2, command_output_limit_bytes: 65_536,
     file_exports: { enabled: policy.config.enabled && policy.config.export_roots.length > 0,

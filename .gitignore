@@ -19,6 +19,7 @@ codex-generated/
 *.host-policy.json.audit.jsonl*
 *.migration.tmp
 *.phone.json
+*.identity.json
 android/**/.gradle/
 android/**/build/
 android/**/local.properties

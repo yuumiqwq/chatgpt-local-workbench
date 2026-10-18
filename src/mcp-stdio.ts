@@ -17,7 +17,8 @@ import { loadPhoneConfig } from "./phone/config.js";
 import { RealAdb } from "./phone/adb.js";
 import { PhoneService } from "./phone/service.js";
 import { PHONE_INSTRUCTIONS, registerPhoneTools } from "./phone/tools.js";
-import { SERVER_INSTRUCTIONS } from "./server-instructions.js";
+import { buildServerInstructions } from "./server-instructions.js";
+import { loadHostIdentity } from "./host-identity.js";
 import { CoreError, serializeError } from "./core/errors.js";
 import { registerTaskResultTools } from "./task-result-tools.js";
 import { HostError, HostPolicy } from "./host/host-policy.js";
@@ -102,6 +103,7 @@ async function main(): Promise<void> {
 
   const configPath = process.argv[2];
   if (configPath === undefined) throw new Error("Workspace configuration path is required.");
+  const identity = await loadHostIdentity(resolve(configPath) + ".identity.json");
   const parsed = await loadWorkspaceConfig(configPath);
   const canonicalConfigPath = await realpath(configPath);
   const workspaceEntries = parsed.filter((entry): entry is WorkspaceEntry => !isProjectRootEntry(entry));
@@ -134,7 +136,7 @@ async function main(): Promise<void> {
   const phoneConfig = await loadPhoneConfig(resolve(configPath) + ".phone.json");
   const phone = phoneConfig ? new PhoneService(phoneConfig, new RealAdb(phoneConfig)) : undefined;
   const server = new McpServer({ name: "engineering-bridge", version: VERSION }, {
-    instructions: SERVER_INSTRUCTIONS + (phone ? `\n\n${PHONE_INSTRUCTIONS}` : "")
+    instructions: buildServerInstructions(identity, phone ? PHONE_INSTRUCTIONS : undefined)
   });
   if (phone) registerPhoneTools(server, phone);
 
@@ -151,6 +153,7 @@ async function main(): Promise<void> {
   };
   setInterval(() => { void sweep(); }, 3_600_000).unref();
   registerHostTools(server, hostPolicy, {
+    identity,
     ...(phone ? { withCommand: <T>(operation: () => Promise<T>) => phone.maintenanceCommand(operation) } : {}),
     validateText: (path, content) => {
       if (relative(canonicalConfigPath, path) === "") parseWorkspaceConfig(content);
