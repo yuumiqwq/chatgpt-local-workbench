@@ -19,25 +19,41 @@ import { loadPhoneConfig, type PhoneConfig } from '../../src/phone/config.js';
 import { RealAdb, type Adb } from '../../src/phone/adb.js';
 import { HostPolicy } from '../../src/host/host-policy.js';
 import { registerHostTools } from '../../src/host/host-tools.js';
+import { physicalPanelState } from '../../src/phone/panel.js';
+import type { PhoneAutomation } from '../../src/phone/automation.js';
+import type { TouchPlan } from '../../src/phone/gestures.js';
 
 class FakeAdb implements Adb {
   calls: string[][] = [];
   state = 'device'; rotation = 0; package = 'com.example.app'; fail = false; uiFail = false; failAfterWrite = false;
   png!: Buffer;
+  wakefulness = 'Awake';
+  panelMode = 'On';
+  activity = '.Main';
+  windowId = 'aa';
+  uiXml = '<?xml version="1.0"?><hierarchy><node text="untrusted"/></hierarchy>';
+  transientAfterWrite = 0;
+  wrote = false;
   async run(args: string[]) {
     this.calls.push(args);
     if (this.fail) throw new Error('ADB_FAILED_OR_TIMEOUT');
     if (args[0] === 'devices') return Buffer.from(`List of devices attached\nAYCVVB2B09005827\t${this.state}\n`);
     if (this.state !== 'device') throw new Error('ADB_FAILED_OR_TIMEOUT');
     const s = args.join(' ');
-    if (s.includes('dumpsys window')) return Buffer.from(`mCurrentFocus=Window{aa u0 ${this.package}/.Main}\nmRotation=${this.rotation}\nPhysical size: 1080x2400`);
+    if (s.includes('dumpsys window')) {
+      if (this.wrote && this.transientAfterWrite-- > 0) return Buffer.from('mCurrentFocus=null');
+      return Buffer.from(`mCurrentFocus=Window{${this.windowId} u0 ${this.package}/${this.activity}}\nmRotation=${this.rotation}\nPhysical size: 1080x2400`);
+    }
     if (s.includes('screencap')) return this.png;
-    if (s.includes('uiautomator')) return Buffer.from(this.uiFail ? 'ERROR' : '<?xml version="1.0"?><hierarchy><node text="untrusted"/></hierarchy>');
+    if (s.includes('uiautomator')) return Buffer.from(this.uiFail ? 'ERROR' : this.uiXml);
     if (s.includes('dumpsys battery')) return Buffer.from('level: 82\nscale: 100\nstatus: 2\nUSB powered: true\ntemperature: 310');
+    if (s.includes('dumpsys power')) return Buffer.from(`mWakefulness=${this.wakefulness}`);
+    if (s.includes('dumpsys SurfaceFlinger')) return Buffer.from(`Display 123\n    connectionType=Internal\n    powerMode=${this.panelMode}\nVirtual Display 456\n    name="scrcpy"\n    powerMode=On\n`);
     if (s.includes('query-activities')) return Buffer.from('com.example.app/.Main\ncom.example.other/.Main\ncom.example.app/.Second');
     if (s.includes('resolve-activity')) return Buffer.from('com.example.app/.Main');
     if (s.includes('default_input_method')) return Buffer.from('org.workbench.ime/.WorkbenchIme');
     if (s.includes('input ') || s.includes('am start') || s.includes('am broadcast')) {
+      this.wrote = true;
       if (this.failAfterWrite) this.fail = true;
       return Buffer.from('Broadcast completed: result=1');
     }
@@ -87,6 +103,47 @@ test('fake-device MCP tools/list and tools/call expose strict nine-tool opt-in s
   assert.equal(data(await client.callTool({ name: 'phone_recover', arguments: { lease_id, request_id: 'mcp-recover-req0001', action: 'reconnect' } }) as CallToolResult).status, 'needs_user_action');
   assert.equal(data(await client.callTool({ name: 'phone_release_control', arguments: { lease_id } }) as CallToolResult).released, true);
 });
+
+test('physical panel status distinguishes the internal screen from the live virtual display', () => {
+  assert.equal(physicalPanelState('Display 123\n    connectionType=Internal\n    powerMode=Off\nVirtual Display 456\n    powerMode=On\n'), 'off');
+  assert.equal(physicalPanelState('Virtual Display 456\n    powerMode=Off\n'), 'unknown');
+  assert.equal(physicalPanelState('Display 123\n    connectionType=Internal\n    powerMode=On\n'), 'on');
+  assert.equal(physicalPanelState('Display 123\n    connectionType=Internal\n    powerMode=Doze\n'), 'unknown');
+});
+
+test('automatic wake closes the panel but preserves a screen manually lit while already awake', async t => {
+  const f = await fixture(t); f.config.dark_on_wake = true;
+  let offCalls = 0;
+  const phone = new PhoneService(f.config, f.adb, Date.now, { async turnOff() { offCalls++; f.adb.panelMode = 'Off'; } });
+  const lease_id = await f.acquire();
+  const call = (request_id: string, name: 'phone_display' | 'phone_recover' = 'phone_display') => phone.call(name, {lease_id,request_id,action:'wake'});
+  f.adb.wakefulness = 'Dozing';
+  const sleeping = data(await call('dark-wake-test-0001'));
+  assert.equal(sleeping.result.status, 'completed');
+  assert.equal(sleeping.result.physical_panel_state, 'off');
+  assert.equal(offCalls, 1);
+  f.adb.wakefulness = 'Awake'; f.adb.panelMode = 'On';
+  assert.equal(data(await call('manual-wake-test-01')).result.status, 'completed');
+  assert.equal(f.adb.panelMode, 'On'); assert.equal(offCalls, 1);
+  f.adb.wakefulness = 'Asleep';
+  assert.equal(data(await call('recovery-wake-test1', 'phone_recover')).result.physical_panel_state, 'off');
+  assert.equal(offCalls, 2);
+});
+
+test('panel-off requires verified physical state and never repeats an uncertain request', async t => {
+  const f = await fixture(t); let calls = 0;
+  const phone = new PhoneService(f.config, f.adb, Date.now, { async turnOff() { calls++; } });
+  const lease_id = await f.acquire();
+  const args = {lease_id,request_id:'panel-unknown-test1',action:'physical_off'};
+  assert.equal(data(await phone.call('phone_display',args)).status, 'outcome_unknown');
+  assert.equal(data(await phone.call('phone_display',args)).status, 'outcome_unknown');
+  assert.equal(calls, 1);
+  assert.equal(f.adb.writes.length, 0);
+  f.adb.panelMode = 'Off';
+  const completed = data(await phone.call('phone_display',{...args,request_id:'panel-success-test1'}));
+  assert.equal(completed.result.physical_panel_state, 'off');
+  assert.equal(completed.result.status, 'completed');
+});
 test('leases coordinate separate instances, expire, renew and reject forged owners', async t => {
   const f = await fixture(t), other = new PhoneService(f.config, f.adb);
   const key = await f.acquire();
@@ -127,6 +184,96 @@ test('expired, changed pixels, app and rotation frames reject before writes', as
   frame = await f.observe(); f.adb.package = 'com.other.app'; assert.equal(data(await run(frame, '3')).error, 'PHONE_FRAME_CHANGED');
   frame = await f.observe(); f.adb.png = await sharp({ create: { width: 1080, height: 2400, channels: 3, background: '#bbb' } }).png().toBuffer();
   assert.equal(data(await run(frame, '4')).error, 'PHONE_FRAME_CHANGED'); assert.equal(f.adb.writes.length, 0);
+});
+
+async function changedRectangle(png: Buffer, left: number, top: number, width: number, height: number) {
+  const input = await sharp({ create: { width, height, channels: 3, background: '#1248ad' } }).png().toBuffer();
+  return sharp(png).composite([{ input, left, top }]).png().toBuffer();
+}
+
+test('tap and long press allow a changing remote banner, including across service instances', async t => {
+  const f = await fixture(t), lease_id = await f.acquire();
+  for (const [index, type] of ['tap', 'long_press'].entries()) {
+    const frame_id = await f.observe();
+    f.adb.png = await changedRectangle(f.adb.png, 0, 1600 + index * 300, 1080, 250);
+    const result = data(await new PhoneService(f.config, f.adb).call('phone_input', {
+      lease_id, frame_id, request_id: `animated-banner-00${index}`, action: { type, x: 300, y: 500 }
+    }));
+    assert.equal(result.result.status, 'completed');
+    assert.equal(result.result.input_validation, 'stable_target_region');
+  }
+  assert.equal(f.adb.writes.length, 2);
+  const frame = JSON.parse(await readFile(join(f.dir, 'frame.json'), 'utf8'));
+  assert.ok(frame.visual.hashes.every((hash: string) => /^[a-f0-9]{64}$/.test(hash)));
+  assert.equal(Object.hasOwn(frame, 'png'), false);
+});
+
+test('tap rejects a moving or covered target even when almost all pixels are unchanged', async t => {
+  const f = await fixture(t), lease_id = await f.acquire(), frame_id = await f.observe();
+  f.adb.png = await changedRectangle(f.adb.png, 330, 510, 10, 10);
+  const result = data(await f.phone.call('phone_input', { lease_id, frame_id,
+    request_id: 'target-moved-000001', action: { type: 'tap', x: 300, y: 500 } }));
+  assert.equal(result.error, 'PHONE_FRAME_CHANGED');
+  assert.equal(f.adb.writes.length, 0);
+});
+
+test('large page changes reject a tap even if its local target remains identical', async t => {
+  const f = await fixture(t), lease_id = await f.acquire(), frame_id = await f.observe();
+  f.adb.png = await changedRectangle(f.adb.png, 0, 1000, 1080, 1000);
+  assert.equal(data(await f.phone.call('phone_input', { lease_id, frame_id,
+    request_id: 'page-changed-000001', action: { type: 'tap', x: 300, y: 500 } })).error, 'PHONE_FRAME_CHANGED');
+  assert.equal(f.adb.writes.length, 0);
+});
+
+test('same-package activity and focused window changes reject identical images', async t => {
+  const f = await fixture(t), lease_id = await f.acquire();
+  for (const [index, field] of ['activity', 'windowId'].entries()) {
+    const frame_id = await f.observe();
+    if (field === 'activity') f.adb.activity = '.Different'; else f.adb.windowId = 'bb';
+    assert.equal(data(await f.phone.call('phone_input', { lease_id, frame_id,
+      request_id: `focus-changed-0000${index}`, action: { type: 'tap', x: 300, y: 500 } })).error, 'PHONE_FRAME_CHANGED');
+  }
+  assert.equal(f.adb.writes.length, 0);
+});
+
+test('text, keys and swipes keep exact-pixel validation on animated pages', async t => {
+  const f = await fixture(t), lease_id = await f.acquire();
+  const actions = [{ type: 'text', text: 'example', mode: 'append' }, { type: 'key', key: 'ENTER' },
+    { type: 'swipe', x: 300, y: 500, to_x: 300, to_y: 800 }];
+  for (const [index, action] of actions.entries()) {
+    const frame_id = await f.observe();
+    f.adb.png = await changedRectangle(f.adb.png, index * 100, 2000, 50, 50);
+    assert.equal(data(await f.phone.call('phone_input', { lease_id, frame_id,
+      request_id: `strict-action-0000${index}`, action })).error, 'PHONE_FRAME_CHANGED');
+  }
+  assert.equal(f.adb.writes.length, 0);
+});
+
+test('identical pixels with different PNG encoding pass and do not expose visual signatures', async t => {
+  const f = await fixture(t), lease_id = await f.acquire(), frame_id = await f.observe();
+  const original = f.adb.png;
+  f.adb.png = await sharp(original).png({ compressionLevel: 0 }).toBuffer();
+  assert.notDeepEqual(f.adb.png, original);
+  const result = data(await f.phone.call('phone_input', { lease_id, frame_id,
+    request_id: 'png-encoding-000001', action: { type: 'tap', x: 300, y: 500 } }));
+  assert.equal(result.result.status, 'completed');
+  assert.equal(result.result.input_validation, 'exact_pixels');
+  assert.equal(Object.hasOwn(result, 'visual'), false);
+  assert.equal(Object.hasOwn(result, 'window'), false);
+});
+
+test('missing or malformed comparison metadata cannot relax a changed frame', async t => {
+  const f = await fixture(t), lease_id = await f.acquire();
+  for (const [index, visual] of [undefined, { version: 1, tile_size: 48, hashes: [] }].entries()) {
+    const frame_id = await f.observe();
+    const file = join(f.dir, 'frame.json'), frame = JSON.parse(await readFile(file, 'utf8'));
+    frame.visual = visual;
+    await writeFile(file, JSON.stringify(frame));
+    f.adb.png = await changedRectangle(f.adb.png, index * 100, 2000, 50, 50);
+    assert.equal(data(await f.phone.call('phone_input', { lease_id, frame_id,
+      request_id: `missing-signature${index}`, action: { type: 'tap', x: 300, y: 500 } })).error, 'PHONE_FRAME_CHANGED');
+  }
+  assert.equal(f.adb.writes.length, 0);
 });
 test('disconnect, unauthorized/offline, unknown state and fresh XML failure never return stale images', async t => {
   const f = await fixture(t); await f.observe();
@@ -295,4 +442,109 @@ test('MCP host command entry point enforces the phone guard and remains availabl
   await f.phone.call('phone_release_control', { lease_id });
   const allowed = await client.callTool({ name: 'run_host_command', arguments: args }) as CallToolResult;
   assert.equal(data(allowed).stdout, 'maintenance-ok');
+});
+
+const semanticXml = (label = '普通按钮', enabled = 'true', position = '[100,200][300,300]') => `<?xml version="1.0"?><hierarchy rotation="0"><node package="com.example.app" class="Layout" enabled="true" bounds="[0,0][1080,2400]" clickable="false"><node package="com.example.app" class="Button" text="${label}" resource-id="app:id/button" enabled="${enabled}" clickable="true" bounds="${position}"/></node></hierarchy>`;
+
+test('semantic observation uses no screenshot and fresh target click survives unrelated pixel changes across processes', async t => {
+  const f = await fixture(t), lease_id = await f.acquire(); f.adb.uiXml = semanticXml();
+  const observed = await f.phone.call('phone_observe', { ui: true, image: false }), frame = data(observed);
+  assert.equal(observed.content.length, 1); assert.equal(frame.rendered, null);
+  assert.equal(f.adb.calls.some(c => c.includes('screencap')), false);
+  assert.equal(frame.ui.elements[0].text, '普通按钮');
+  const persisted = await readFile(join(f.dir, 'frame.json'), 'utf8');
+  assert.ok(!persisted.includes('普通按钮') && !persisted.includes('app:id/button'));
+  f.adb.png = await changedRectangle(f.adb.png, 0, 1200, 1080, 1000);
+  const result = data(await new PhoneService(f.config, f.adb).call('phone_input', { lease_id,
+    request_id: 'semantic-cross-0001', frame_id: frame.frame_id, action: { type: 'tap_element', element_id: frame.ui.elements[0].element_id } }));
+  assert.equal(result.result.status, 'completed'); assert.equal(result.result.input_validation, 'fresh_ui_target');
+  assert.deepEqual(f.adb.writes[0], ['shell', 'input', 'tap', '200', '250']);
+  const firstWrite = f.adb.calls.findIndex(c => c.includes('tap'));
+  assert.equal(f.adb.calls.slice(0, firstWrite).some(c => c.includes('screencap')), false);
+  assert.equal(f.adb.calls.filter(c => c.includes('uiautomator')).length, 2);
+});
+
+test('semantic target rename, movement, disablement and missing UI cannot dispatch', async t => {
+  const f = await fixture(t), lease_id = await f.acquire();
+  for (const [index, xml] of [semanticXml('另一个按钮'), semanticXml('普通按钮', 'true', '[200,200][400,300]'), semanticXml('普通按钮', 'false'), 'ERROR'].entries()) {
+    f.adb.uiXml = semanticXml();
+    const frame = data(await f.phone.call('phone_observe', { ui: true, image: false }));
+    f.adb.uiXml = xml;
+    const result = await f.phone.call('phone_input', { lease_id, request_id: `semantic-reject-00${index}`, frame_id: frame.frame_id,
+      action: { type: 'tap_element', element_id: frame.ui.elements[0].element_id } });
+    assert.equal(result.isError, true);
+  }
+  assert.equal(f.adb.writes.length, 0);
+});
+
+test('UI-only frames cannot authorize coordinate actions and image-only frames cannot authorize element actions', async t => {
+  const f = await fixture(t), lease_id = await f.acquire(); f.adb.uiXml = semanticXml();
+  const ui = data(await f.phone.call('phone_observe', { ui: true, image: false }));
+  assert.equal(data(await f.phone.call('phone_input', { lease_id, request_id: 'ui-coordinate-0001', frame_id: ui.frame_id,
+    action: { type: 'tap', x: 200, y: 250 } })).error, 'PHONE_IMAGE_OBSERVATION_REQUIRED');
+  const frame_id = await f.observe();
+  assert.equal(data(await f.phone.call('phone_input', { lease_id, request_id: 'image-element-0001', frame_id,
+    action: { type: 'tap_element', element_id: ui.ui.elements[0].element_id } })).error, 'PHONE_UI_OBSERVATION_REQUIRED');
+  assert.equal(f.adb.writes.length, 0);
+});
+
+test('navigation observation retries read-only on transient missing focus without replaying the click', async t => {
+  const f = await fixture(t), lease_id = await f.acquire(), frame_id = await f.observe();
+  f.adb.transientAfterWrite = 2;
+  const args = {lease_id, frame_id, request_id:'transition-test-001', action:{type:'tap',x:100,y:100}};
+  const result = data(await f.phone.call('phone_input', args));
+  assert.equal(result.result.status, 'completed'); assert.equal(result.result.observation_attempts, 3);
+  assert.equal(f.adb.writes.length, 1);
+  assert.equal(data(await f.phone.call('phone_input', args)).replayed, true);
+  assert.equal(f.adb.writes.length, 1);
+});
+
+test('persistent missing focus remains unknown after bounded observation retries', async t => {
+  const f = await fixture(t), lease_id = await f.acquire(), frame_id = await f.observe(); f.adb.transientAfterWrite = 100;
+  const result = data(await f.phone.call('phone_input', { lease_id, frame_id, request_id:'transition-fail-001', action:{type:'tap',x:100,y:100} }));
+  assert.equal(result.status, 'outcome_unknown'); assert.equal(f.adb.writes.length, 1);
+});
+
+test('Appium semantic and coordinate gestures dispatch once without an additional ADB tap', async t => {
+  const f = await fixture(t), lease_id = await f.acquire(), gestures: TouchPlan[] = [];
+  const automation: PhoneAutomation = { ready: async () => {}, source: async () => semanticXml(), perform: async plan => { gestures.push(plan); } };
+  const phone = new PhoneService(f.config, f.adb, Date.now, undefined, automation);
+  for (const type of ['tap_element', 'tap', 'swipe'] as const) {
+    const frame = data(await phone.call('phone_observe', { ui: true, image: type !== 'tap_element' }));
+    const action = type === 'tap_element' ? { type, element_id: frame.ui.elements[0].element_id }
+      : type === 'tap' ? { type, x: 200, y: 250 } : { type, x: 200, y: 250, to_x: 200, to_y: 100, duration_ms: 300 };
+    const args = { lease_id, frame_id: frame.frame_id, request_id: `appium-dispatch-${type}`, action };
+    const result = data(await phone.call('phone_input', args));
+    assert.equal(result.result.status, 'completed');
+    assert.equal(result.result.touch.backend, 'appium_uiautomator2');
+    assert.equal(data(await phone.call('phone_input', args)).replayed, true);
+  }
+  assert.equal(gestures.length, 3); assert.equal(f.adb.writes.length, 0);
+  assert.equal(f.adb.calls.some(call => call.includes('uiautomator')), false);
+});
+
+test('condition wait reads until target appears, tolerates changing unrelated text and returns a fresh frame', async t => {
+  const f = await fixture(t); let reads = 0;
+  const automation: PhoneAutomation = { ready: async () => {}, perform: async () => { throw new Error('unexpected write'); },
+    source: async () => {
+      reads++;
+      return semanticXml(reads > 1 ? 'Ready' : 'Loading').replace('</hierarchy>', `<node package="com.example.app" enabled="true" clickable="false" text="Ad ${reads}" bounds="[0,500][500,600]"/></hierarchy>`);
+    } };
+  const phone = new PhoneService(f.config, f.adb, Date.now, undefined, automation);
+  const result = data(await phone.call('phone_observe', { image: false, wait_for: { selector: { text: 'Ready' }, state: 'enabled', timeout_ms: 2000, stable_ms: 100 } }));
+  assert.equal(result.result.wait.status, 'matched'); assert.ok(reads >= 3);
+  assert.equal(result.ui.elements[0].text, 'Ready'); assert.equal(result.rendered, null);
+  assert.equal(f.adb.writes.length, 0);
+});
+
+test('post-action wait timeout reports the observation and never repeats the gesture', async t => {
+  const f = await fixture(t), lease_id = await f.acquire(); let dispatched = 0;
+  const automation: PhoneAutomation = { ready: async () => {}, source: async () => semanticXml(), perform: async () => { dispatched++; } };
+  const phone = new PhoneService(f.config, f.adb, Date.now, undefined, automation);
+  const frame = data(await phone.call('phone_observe', { ui: true, image: false }));
+  const args = { lease_id, frame_id: frame.frame_id, request_id: 'appium-wait-timeout-01', action: { type: 'tap_element', element_id: frame.ui.elements[0].element_id },
+    wait_for: { selector: { text: 'Missing' }, timeout_ms: 100, stable_ms: 0 } };
+  const result = data(await phone.call('phone_input', args));
+  assert.equal(result.result.wait.status, 'timeout'); assert.equal(result.result.request_sent, true);
+  assert.equal(data(await phone.call('phone_input', args)).replayed, true); assert.equal(dispatched, 1);
 });

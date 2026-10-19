@@ -1,6 +1,6 @@
 # Lenovo Legion 手机模块部署与验收
 
-本模块在完整 Local Workbench 的同一个 MCP stdio 服务中增加九个工具，原有 host、workspace、Codex、DSH、Task 和持久 Work 功能保留。没有手机配置，或配置为 `{"enabled":false}` 时，工具列表与宿主说明维持原样。本次开发与 fake device 测试发生在 ROG 的隔离工作树；ROG 不是联想拯救者，当前没有 Lenovo 部署或真实手机控制的验收记录。
+本模块在完整 Local Workbench 的同一个 MCP stdio 服务中增加九个工具，原有 host、workspace、Codex、DSH、Task 和持久 Work 功能保留。没有手机配置，或配置为 `{"enabled":false}` 时，工具列表与宿主说明维持原样。初始开发使用模拟设备，后续已在联想拯救者与荣耀 80 上部署；具体版本的现场结果见同目录验收文档。
 
 目标主机为 Lenovo Legion R7000 2020 / 82B6，hostname 为 `LAPTOP-NHHRR3GO`。目标手机为 HONOR 80 / ANN-AN00，固定 ADB serial 为 `AYCVVB2B09005827`，预期 Android 15 / MagicOS 9，原始显示尺寸为 1080×2400。这些是部署目标资料，运行状态以现场探测为准。
 
@@ -14,7 +14,7 @@ ADB 位于真实用户配置目录下的 `CloudPhoneServer\scrcpy-win64-v5.0.1\a
 
 将 `config/phone.example.json` 复制为 Lenovo 私有工作区配置旁的 `workspaces.json.phone.json`，核实 hostname、adb_path、state_dir 后才将 enabled 设为 true。serial 固定为目标手机，不从调用参数接受其他设备。保留 ime_enabled=false，直到输入法完成本机编译、安装和现场测试。ROG 不添加启用配置，也不更改其现有配置、服务或 tunnel。
 
-既有守护器的路径是 `C:\Users\常可依\Documents\Codex\2026-10-17\workbench-plugin-dev-6acbd4feb9708191ad19dd29cd9b8a0e-created-by\outputs\CloudPhoneServer\Phone-Host.ps1`。该守护器每 5 秒管理 scrcpy，每 30 秒设置 stay awake。本模块不启动第二个 scrcpy，不修改、终止或重启该脚本，也不修改 stay-awake 标志。ADB 写入与按需截图均独立于 scrcpy。
+既有守护器的路径是 `C:\Users\常可依\Documents\Codex\2026-10-17\workbench-plugin-dev-6acbd4feb9708191ad19dd29cd9b8a0e-created-by\outputs\CloudPhoneServer\Phone-Host.ps1`。该守护器每 5 秒管理 scrcpy，每 30 秒设置 stay awake。本模块保留该脚本和 stay-awake 标志。配置物理暗屏功能时，可使用短期 scrcpy 控制连接；日常投屏仍由原守护器管理。
 
 ## 单一 Secure MCP Tunnel
 
@@ -28,6 +28,8 @@ ADB 位于真实用户配置目录下的 `CloudPhoneServer\scrcpy-win64-v5.0.1\a
 
 ## 无手机写动作的现场验收
 
+本机 `1.7.0-local.4` 的点击和长按采用目标区域校验：目标周围的原始像素块必须完全一致，焦点窗口、包名、尺寸和旋转必须一致，其他变化像素块覆盖面积不超过整页的 25%。这样可容忍目标以外的轮播广告或状态栏变化；目标移动、被遮挡、窗口变化和大幅换页仍返回 `PHONE_FRAME_CHANGED`。文字、按键和滑动暂时保留整屏像素一致要求。观察响应的 `input_validation` 描述当前规则，成功动作的 `result.input_validation` 标明使用整屏匹配还是区域匹配。此规则不是语义页面识别，也不消除截图与输入之间的竞态。
+
 由实际运行账户在 Lenovo checkout 内执行：
 
 ```powershell
@@ -39,9 +41,27 @@ node scripts/legion-phone-check.mjs E:\LocalWorkbenchPrivate\workspaces.json --u
 
 随后通过同一 Lenovo tunnel 调用 `server_status`、`list_workspaces` 和 `phone_observe`，核实真实 tunnel 连通性。上述本地脚本通过仅证明本地 stdio 通路；现场报告应分别记录本地、tunnel、设备读操作和设备写操作的证据，不将其中一种替代其他种类。
 
+### 控件优先操作（1.7.0-local.5）
+
+优先调用 `phone_observe({ui:true,image:false})`。从返回的 `ui.elements` 按 `text`、`resource_id` 或 `description` 选择唯一目标，再用最新 `frame_id`、租约及独立请求号调用 `phone_input`，动作为 `{type:"tap_element",element_id:"观察返回的ID"}`。执行前会重新读取 UI，核对窗口、目标身份/位置、可用性和页面锚点；不依赖全屏像素相同。控件不存在或有歧义时不要猜 ID，改为重新观察；自绘页面没有可用控件时，使用带图片的观察和坐标回退。只有图像观察产生的 frame 才能授权坐标动作。
+
+动作后返回新的观察供 Agent 核对结果。页面切换造成焦点暂时消失时只重试读取；`completed` 表示动作已发送并取得后续观察，业务结果由实际页面确认。使用 `wait_for` 时返回控件观察与条件状态，未使用时返回图像。
+
+### Appium 手势与条件等待（1.7.0-local.6）
+
+Appium 3 与 UiAutomator2 驱动作为本机后台服务运行，只监听 `127.0.0.1`。手机配置增加 `"appium_url":"http://127.0.0.1:4735"` 后，控件读取使用 UiAutomator2，点击和滑动使用 W3C touch actions；ADB 继续负责 USB 连接、截图、应用启动及输入法广播。现有 MCP 隧道与 Phone-Host 保持原用途，不另开公网 Appium 端口。
+
+控件点击在确认后的目标内部采用少量位置变化，按下持续 80–160 毫秒后抬起。长按保留指定持续时间，滑动在同一次触摸中生成连续移动事件，并逐渐加速、减速。坐标点击保留调用者指定的位置。会话信息存放在私有手机状态目录，多进程复用同一会话；读取发现会话或 instrumentation 已停止时重新建立连接，已发送的手势不会自动重发。
+
+`phone_observe`、`phone_open_app` 和 `phone_input` 接受可选的 `wait_for`。其中 `selector` 可用 `text`、`resource_id`、`description` 或 `class` 精确匹配，`state` 为 `visible`、`enabled` 或 `gone`；`timeout_ms` 默认 10000、最多 30000，`stable_ms` 默认 200。等待检查目标和当前窗口，广告等无关内容变化不影响目标稳定性。结果通过 `result.wait.status` 返回 `matched` 或 `timeout`，超时后的下一步根据新观察决定。`ui.nodes` 同时提供可见的非按钮文字，便于等待加载结果。
+
+拯救者运行环境为 Appium 3.8.0、UiAutomator2 8.7.0、Node 24.19.0、JDK 17 与 Android SDK。启动入口 `D:\StudyServer\config\start-server.ps1` 调用独立 Appium 守护器，手机端安装 `io.appium.uiautomator2.server` 及对应测试包。真机运行不需要 Android 模拟器；doctor 中的 emulator 缺项按此条件记录。安装完成后先执行本机读写验收，再重载 Legion 的 MCP 运行实例。
+
+工具参数或说明更新后，重载服务器，并在 ChatGPT 的对应自定义插件详情中 Refresh，再开启新会话验收。无需新建隧道、变更身份或修改其他电脑的连接。[官方刷新流程](https://developers.openai.com/plugins/deploy/connect-chatgpt#refresh-metadata)。
+
 ## 输入法部署与最小写入验收
 
-开源轻量输入法位于 `android/workbench-ime`，沿用仓库 MIT 许可，没有网络权限、不记录输入文本。构建需要 JDK 17、Android SDK Platform 35 与 Gradle 8.9；在已配置 Android 构建环境的机器执行 `gradle -p android/workbench-ime assembleDebug`。项目未捆绑二进制 Gradle wrapper、SDK、签名私钥或预编译 APK。构建产物在 app/build/outputs/apk/debug；长期使用应由管理员用自己的密钥签名并保管密钥。当前开发机没有 Java/Gradle 工具链，APK 构建和 Android 行为尚未验证。
+开源轻量输入法位于 `android/workbench-ime`，沿用仓库 MIT 许可，没有网络权限、不记录输入文本。构建需要 JDK 17、Android SDK Platform 35 与 Gradle 8.9；在已配置 Android 构建环境的机器执行 `gradle -p android/workbench-ime assembleDebug`。项目未捆绑二进制 Gradle wrapper、SDK、签名私钥或预编译 APK。构建产物在 app/build/outputs/apk/debug；长期使用应由管理员用自己的密钥签名并保管密钥。拯救者已经完成 APK 构建、安装以及中文、换行和 emoji 的现场输入验收。
 
 仅在 Lenovo 上，用经核实的 adb.exe 及固定 `-s AYCVVB2B09005827` 安装经过审核的 APK，记录原来的 `settings get secure default_input_method` 值。通过手机设置启用并选择 `org.workbench.ime/.WorkbenchIme`，或在明确的本机维护阶段使用 `ime enable` 与 `ime set` 完成相同操作。之后将 ime_enabled 设为 true，并在维护窗口重新启动 Lenovo 该实例的 stdio 进程。不要启动或重启 Phone-Host。
 
@@ -66,10 +86,10 @@ node dist/src/phone/admin.js E:\LocalWorkbenchPrivate\workspaces.json.phone.json
 
 恢复命令检查锁 PID，进程存活、权限不足或 PID 被重用时均拒绝接管。mkdir 后、PID 写入前崩溃造成的无 PID 锁，仅在管理员明确确认所有相关 stdio 已停止时移除。锁不会因为时间过长而自动失效，从而避免 Windows 睡眠、暂停或慢磁盘产生两个写入者。恢复后保持暂停，保留全部 request 收据；核对 pending 操作的设备结果后再 resume。不要删除状态目录来“修复”操作，否则会丢失防重放记录。
 
-物理熄屏目前不提供实现：`physical_off` 返回 `unsupported_unverified`，不会发送 POWER 键。`wake` 使用 WAKEUP，它不承诺解锁。POWER 会改变交互/锁屏状态，与 scrcpy 的面板关闭语义不同；未来任何 scrcpy 面板控制必须先验证与既有 Phone-Host 的单一所有权协调。USB 断开、未授权和首次解锁不明时，按现场状态引导用户连接、授权或解锁。恢复工具不重启手机、不清空密钥、不重启共享 ADB server。
+配置经过现场验证的 `scrcpy_path` 后，`physical_off` 使用短期控制连接关闭物理面板，并核对 SurfaceFlinger 状态；原投屏与 Phone-Host 继续运行。`dark_on_wake` 在自动唤醒后恢复暗屏，已经由用户点亮的屏幕保持原状态。USB 断开或授权失效时按现场状态恢复连接，恢复工具保留原 ADB 服务与授权密钥。
 
 ## 已覆盖与待验证
 
 fake device 测试覆盖 MCP schema 与调用、共享租约、持久去重、不确定结果、窗口/旋转/像素变化、USB 状态、图像尺寸与预算，以及真实 Windows 子进程被终止后的锁恢复。完整仓库测试用于核对 host、workspace 和任务功能回归。
 
-Lenovo 待验收项包括运行账户 adbkey 授权、MagicOS dumpsys 格式、uiautomator `/dev/tty` 可用性、保护窗口行为、中文输入法 APK 构建安装与编辑器兼容性，以及同一 tunnel 的真实请求响应。FLAG_SECURE、首次解锁和物理面板状态无法可靠核实时返回 unknown，不根据黑屏图像推断。节点定位输入、物理熄屏、自管理投屏以及自动 USB 恢复属于后续扩展；当前不承诺这些能力。
+现场已验证当前运行账户的 ADB 授权、MagicOS 状态读取、控件定位、中文输入法及物理暗屏操作，具体操作和版本见验收记录。手机重启后的首次解锁、保护窗口及 USB 重新授权依设备状态处理；Windows 重启、锁屏和断网恢复测试按用户要求暂缓。
