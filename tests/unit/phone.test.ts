@@ -33,6 +33,10 @@ class FakeAdb implements Adb {
   activity = '.Main';
   windowId = 'aa';
   inputConnection = 'abc';
+  selectedIme = 'org.workbench.ime/.WorkbenchIme';
+  imeInstalled = true;
+  imeEnabled = true;
+  imeSelectionFails = false;
   uiXml = '<?xml version="1.0"?><hierarchy><node text="untrusted"/></hierarchy>';
   transientAfterWrite = 0;
   wrote = false;
@@ -53,7 +57,14 @@ class FakeAdb implements Adb {
     if (s.includes('dumpsys SurfaceFlinger')) return Buffer.from(`Display 123\n    connectionType=Internal\n    powerMode=${this.panelMode}\nVirtual Display 456\n    name="scrcpy"\n    powerMode=On\n`);
     if (s.includes('query-activities')) return Buffer.from('com.example.app/.Main\ncom.example.other/.Main\ncom.example.app/.Second');
     if (s.includes('resolve-activity')) return Buffer.from('com.example.app/.Main');
-    if (s.includes('default_input_method')) return Buffer.from('org.workbench.ime/.WorkbenchIme');
+    if (s.includes('default_input_method')) return Buffer.from(this.selectedIme);
+    if (s.includes('enabled_input_methods')) return Buffer.from(this.imeEnabled ? 'org.workbench.ime/.WorkbenchIme' : 'com.example.keyboard/.Ime');
+    if (s === 'shell ime list -a -s') return Buffer.from(this.imeInstalled ? 'com.example.keyboard/.Ime\norg.workbench.ime/.WorkbenchIme\n' : 'com.example.keyboard/.Ime\n');
+    if (s === 'shell ime enable org.workbench.ime/.WorkbenchIme') { this.imeEnabled = true; return Buffer.from('enabled'); }
+    if (s === 'shell ime set org.workbench.ime/.WorkbenchIme') {
+      if (!this.imeSelectionFails) this.selectedIme = 'org.workbench.ime/.WorkbenchIme';
+      return Buffer.from('selected');
+    }
     if (s.includes('dumpsys input_method')) return Buffer.from(`Input method service state for org.workbench.ime.WorkbenchIme@abc:\n  mStartedInputConnection=RemoteInputConnection{idHash=#${this.inputConnection}}\n  mInputStarted=true\n  mInputEditorInfo:\n    inputType=0x1\n    packageName=${this.package} autofillId=123 fieldId=1\n  mShowInputRequested=true`);
     if (s.includes('input ') || s.includes('am start') || s.includes('am broadcast')) {
       this.wrote = true;
@@ -159,6 +170,48 @@ test('leases coordinate separate instances, expire, renew and reject forged owne
   await f.phone.call('phone_release_control', { lease_id: next });
   await f.phone.assertHostCommandAllowed();
 });
+test('acquisition prepares the configured IME, respects a busy lease and recovers a later manual keyboard change', async t => {
+  const f = await fixture(t);
+  f.adb.selectedIme = 'com.example.keyboard/.Ime';
+  f.adb.imeEnabled = false;
+  const acquired = data(await f.phone.call('phone_acquire_control', {}));
+  assert.deepEqual(acquired.text_input, { status: 'ready', changed: true });
+  assert.equal(f.adb.imeEnabled, true);
+  const frame_id = await f.observe();
+  const input = data(await f.phone.call('phone_input', { lease_id: acquired.lease_id, frame_id,
+    request_id: 'auto-ime-chinese-0001', action: {type:'text', text:'中文输入 😀', mode:'replace'} }));
+  assert.equal(input.result.status, 'completed');
+  f.adb.selectedIme = 'com.example.keyboard/.Ime';
+  assert.equal(data(await f.phone.call('phone_acquire_control', {})).status, 'busy');
+  assert.equal(f.adb.selectedIme, 'com.example.keyboard/.Ime');
+  await f.phone.call('phone_release_control', {lease_id:acquired.lease_id});
+  const next = data(await f.phone.call('phone_acquire_control', {}));
+  assert.deepEqual(next.text_input, {status:'ready',changed:true});
+  await f.phone.call('phone_release_control', {lease_id:next.lease_id});
+  const sets = f.adb.calls.filter(c => c.join(' ') === 'shell ime set org.workbench.ime/.WorkbenchIme').length;
+  assert.deepEqual(data(await f.phone.call('phone_acquire_control', {})).text_input, {status:'ready',changed:false});
+  assert.equal(f.adb.calls.filter(c => c.join(' ') === 'shell ime set org.workbench.ime/.WorkbenchIme').length, sets);
+});
+
+test('IME opt-out, missing package and failed selection do not block non-text phone controls', async t => {
+  for (const scenario of ['disabled', 'missing', 'selection_failed'] as const) {
+    const f = await fixture(t);
+    f.adb.selectedIme = 'com.example.keyboard/.Ime';
+    if (scenario === 'disabled') f.config.ime_enabled = false;
+    if (scenario === 'missing') f.adb.imeInstalled = false;
+    if (scenario === 'selection_failed') f.adb.imeSelectionFails = true;
+    const acquired = data(await f.phone.call('phone_acquire_control', {}));
+    assert.ok(acquired.lease_id);
+    assert.deepEqual(acquired.text_input, scenario === 'disabled' ? {status:'not_configured'} :
+      {status:'unavailable',error:scenario === 'missing' ? 'PHONE_IME_NOT_INSTALLED' : 'PHONE_IME_SELECTION_UNCONFIRMED'});
+    if (scenario === 'disabled') assert.equal(f.adb.calls.length, 0);
+    if (scenario === 'missing') assert.ok(!f.adb.calls.some(c => c[1] === 'ime' && ['enable','set'].includes(c[2]!)));
+    const frame_id = await f.observe();
+    assert.equal(data(await f.phone.call('phone_input', {lease_id:acquired.lease_id, frame_id,
+      request_id:'ime-failure-key-0001',action:{type:'key',key:'BACK'}})).result.status, 'completed');
+  }
+});
+
 test('single action, persistent deduplication, request conflict, Unicode no plaintext persistence', async t => {
   const f = await fixture(t), lease_id = await f.acquire(), frame_id = await f.observe();
   const args = { lease_id, frame_id, request_id: 'unicode-request-0001', action: { type: 'text', text: '中文\n第二行 😀', mode: 'replace' } };

@@ -71,7 +71,9 @@ Appium 3 与 UiAutomator2 驱动作为本机后台服务运行，只监听 `127.
 
 仅在 Lenovo 上，用经核实的 adb.exe 及固定 `-s AYCVVB2B09005827` 安装经过审核的 APK，记录原来的 `settings get secure default_input_method` 值。通过手机设置启用并选择 `org.workbench.ime/.WorkbenchIme`，或在明确的本机维护阶段使用 `ime enable` 与 `ime set` 完成相同操作。之后将 ime_enabled 设为 true，并在维护窗口重新启动 Lenovo 该实例的 stdio 进程。不要启动或重启 Phone-Host。
 
-在手机上手动打开无敏感信息的空白备忘录，由用户明确授权测试输入。依次 acquire、observe、input，使用随机 request_id，测试包含中文、换行与 emoji 的 append/replace。append 定义为在字段末尾追加，replace 定义为替换整个字段；输入法要求编辑器支持完整文本提取与选区，否则拒绝并返回不确定结果供观察。核对文本实际落入目标字段后释放租约，并恢复原输入法。不要在支付、发消息、授权或密码输入界面验收。IME 的成功回执表示 InputConnection 接受提交，实际显示仍须核对。
+版本 `1.7.0-local.11` 起，`ime_enabled=true` 时，获取手机控制权会自动启用并选中已安装的 Workbench 输入法，`text_input` 返回准备结果。随后重新观察页面，建立当前输入框的焦点依据。释放控制权后保留该输入法，方便无人值守使用；用户手动换用其他键盘后，下次获取控制权会重新准备。输入法缺失或切换失败时仍可使用其他手机操作，文字输入按返回的状态处理。
+
+在无敏感信息的空白备忘录中验收输入，依次 acquire、observe、input，使用随机 request_id，测试包含中文、换行与 emoji 的 append/replace。append 定义为在字段末尾追加，replace 定义为替换整个字段；输入法要求编辑器支持完整文本提取与选区，否则拒绝并返回不确定结果供观察。核对文本实际落入目标字段后释放租约，按手机用途保留 Workbench 输入法或切回用户日常键盘。IME 的成功回执表示 InputConnection 接受提交，实际显示仍须核对。
 
 输入广播使用 UTF-8 Base64，由动态接收器要求调用方具有 Android `DUMP` 权限；普通应用无此权限，ADB shell 具备相应维护能力。该方式无需 Root，详见 [Android registerReceiver 权限语义](https://developer.android.com/reference/android/content/Context) 与 [InputConnection API](https://developer.android.com/reference/android/view/inputmethod/InputConnection)。Base64 不等于加密，有 OS 进程查看权限的维护人员可看到命令参数。输入文本不写入 Workbench 请求记录或故障日志。
 

@@ -127,6 +127,28 @@ export class PhoneService {
     try { return inputFocusProof(await this.shell('dumpsys', 'input_method'), packageName); }
     catch { return undefined; }
   }
+  private async prepareIme() {
+    if (!this.config.ime_enabled) return { status: 'not_configured' };
+    const target = 'org.workbench.ime/.WorkbenchIme';
+    try {
+      if ((await this.shell('settings', 'get', 'secure', 'default_input_method')).trim() === target)
+        return { status: 'ready', changed: false };
+      const installed = (await this.shell('ime', 'list', '-a', '-s')).trim().split(/\r?\n/);
+      if (!installed.includes(target)) return { status: 'unavailable', error: 'PHONE_IME_NOT_INSTALLED' };
+      const enabled = (await this.shell('settings', 'get', 'secure', 'enabled_input_methods')).trim().split(':').map(value => value.split(';')[0]);
+      if (!enabled.includes(target)) await this.shell('ime', 'enable', target);
+      await this.shell('ime', 'set', target);
+      // Switching is acknowledged before subsequent observations establish focus.
+      for (let attempt = 0; attempt < 4; attempt++) {
+        if ((await this.shell('settings', 'get', 'secure', 'default_input_method')).trim() === target)
+          return { status: 'ready', changed: true };
+        if (attempt < 3) await delay(100);
+      }
+      return { status: 'unavailable', error: 'PHONE_IME_SELECTION_UNCONFIRMED' };
+    } catch {
+      return { status: 'unavailable', error: 'PHONE_IME_PREPARATION_FAILED' };
+    }
+  }
   private async capture(ui: boolean, image: boolean | 'auto' = true): Promise<{ frame: Frame; png?: Buffer; ui: unknown; rendered: { width: number; height: number } | null; semantic?: UiSnapshot; reason?: string }> {
     if (!ui && !image) throw new Error('PHONE_OBSERVATION_REQUIRED');
     const before = await this.context();
@@ -502,9 +524,10 @@ export class PhoneService {
         if (await this.store.paused()) throw new Error('PHONE_ADMIN_PAUSED');
         const current = await this.readLease();
         if (current && current.expires > this.now() && current.epoch === await this.epoch()) return json({ status: 'busy', expires_at: new Date(current.expires).toISOString() });
+        const textInput = await this.prepareIme();
         const leaseId = token(), expires = this.now() + this.config.lease_seconds * 1000;
         await this.store.save('lease.json', { hash: digest(leaseId), expires, epoch: await this.epoch() });
-        return json({ lease_id: leaseId, expires_at: new Date(expires).toISOString(), identity: 'bearer_capability; actual client account unknown' });
+        return json({ lease_id: leaseId, expires_at: new Date(expires).toISOString(), identity: 'bearer_capability; actual client account unknown', text_input: textInput });
       });
     } catch (e) {
       const message = e instanceof Error && /^PHONE_[A-Z_]+$|^ADB_FAILED_OR_TIMEOUT$/.test(e.message) ? e.message : 'PHONE_INVALID_REQUEST_OR_STATE';
