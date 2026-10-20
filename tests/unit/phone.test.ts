@@ -31,6 +31,7 @@ class FakeAdb implements Adb {
   panelMode = 'On';
   activity = '.Main';
   windowId = 'aa';
+  inputConnection = 'abc';
   uiXml = '<?xml version="1.0"?><hierarchy><node text="untrusted"/></hierarchy>';
   transientAfterWrite = 0;
   wrote = false;
@@ -52,6 +53,7 @@ class FakeAdb implements Adb {
     if (s.includes('query-activities')) return Buffer.from('com.example.app/.Main\ncom.example.other/.Main\ncom.example.app/.Second');
     if (s.includes('resolve-activity')) return Buffer.from('com.example.app/.Main');
     if (s.includes('default_input_method')) return Buffer.from('org.workbench.ime/.WorkbenchIme');
+    if (s.includes('dumpsys input_method')) return Buffer.from(`Input method service state for org.workbench.ime.WorkbenchIme@abc:\n  mStartedInputConnection=RemoteInputConnection{idHash=#${this.inputConnection}}\n  mInputStarted=true\n  mInputEditorInfo:\n    inputType=0x1\n    packageName=${this.package} autofillId=123 fieldId=1\n  mShowInputRequested=true`);
     if (s.includes('input ') || s.includes('am start') || s.includes('am broadcast')) {
       this.wrote = true;
       if (this.failAfterWrite) this.fail = true;
@@ -195,7 +197,7 @@ test('tap and long press allow a changing remote banner, including across servic
   const f = await fixture(t), lease_id = await f.acquire();
   for (const [index, type] of ['tap', 'long_press'].entries()) {
     const frame_id = await f.observe();
-    f.adb.png = await changedRectangle(f.adb.png, 0, 1600 + index * 300, 1080, 250);
+    f.adb.png = await changedRectangle(f.adb.png, 0, 900 + index * 800, 1080, 700);
     const result = data(await new PhoneService(f.config, f.adb).call('phone_input', {
       lease_id, frame_id, request_id: `animated-banner-00${index}`, action: { type, x: 300, y: 500 }
     }));
@@ -217,12 +219,12 @@ test('tap rejects a moving or covered target even when almost all pixels are unc
   assert.equal(f.adb.writes.length, 0);
 });
 
-test('large page changes reject a tap even if its local target remains identical', async t => {
+test('large unrelated pixel changes do not block a stable coordinate target', async t => {
   const f = await fixture(t), lease_id = await f.acquire(), frame_id = await f.observe();
-  f.adb.png = await changedRectangle(f.adb.png, 0, 1000, 1080, 1000);
+  f.adb.png = await changedRectangle(f.adb.png, 0, 1000, 1080, 1400);
   assert.equal(data(await f.phone.call('phone_input', { lease_id, frame_id,
-    request_id: 'page-changed-000001', action: { type: 'tap', x: 300, y: 500 } })).error, 'PHONE_FRAME_CHANGED');
-  assert.equal(f.adb.writes.length, 0);
+    request_id: 'page-changed-000001', action: { type: 'tap', x: 300, y: 500 } })).result.status, 'completed');
+  assert.equal(f.adb.writes.length, 1);
 });
 
 test('same-package activity and focused window changes reject identical images', async t => {
@@ -236,17 +238,61 @@ test('same-package activity and focused window changes reject identical images',
   assert.equal(f.adb.writes.length, 0);
 });
 
-test('text, keys and swipes keep exact-pixel validation on animated pages', async t => {
+test('text and keys tolerate animation while validating the relevant context', async t => {
   const f = await fixture(t), lease_id = await f.acquire();
-  const actions = [{ type: 'text', text: 'example', mode: 'append' }, { type: 'key', key: 'ENTER' },
-    { type: 'swipe', x: 300, y: 500, to_x: 300, to_y: 800 }];
+  const actions = [{ type: 'text', text: 'example', mode: 'append' }, { type: 'key', key: 'ENTER' }];
   for (const [index, action] of actions.entries()) {
     const frame_id = await f.observe();
     f.adb.png = await changedRectangle(f.adb.png, index * 100, 2000, 50, 50);
-    assert.equal(data(await f.phone.call('phone_input', { lease_id, frame_id,
-      request_id: `strict-action-0000${index}`, action })).error, 'PHONE_FRAME_CHANGED');
+    const result = data(await f.phone.call('phone_input', { lease_id, frame_id,
+      request_id: `strict-action-0000${index}`, action }));
+    assert.equal(result.result.status, 'completed');
+    assert.equal(result.result.input_validation, index === 0 ? 'fresh_input_connection' : 'fresh_context');
   }
+  assert.equal(f.adb.writes.length, 2);
+});
+
+test('text refuses an IME input connection changed since observation', async t => {
+  const f = await fixture(t), lease_id = await f.acquire(), frame_id = await f.observe();
+  f.adb.inputConnection = 'def';
+  assert.equal(data(await f.phone.call('phone_input', {lease_id,frame_id,request_id:'changed-editor-001',
+    action:{type:'text',text:'test',mode:'replace'}})).error, 'PHONE_UI_TEXT_FOCUS_CHANGED');
   assert.equal(f.adb.writes.length, 0);
+});
+
+test('ordinary scroll accepts UI-only frames and animated contents but rejects changed windows', async t => {
+  const f = await fixture(t), lease_id = await f.acquire(); f.adb.uiXml = semanticXml();
+  let frame = data(await f.phone.call('phone_observe',{ui:true,image:false}));
+  f.adb.png = await changedRectangle(f.adb.png,0,0,1080,2400);
+  const action = {type:'scroll',x:540,y:1600,to_x:540,to_y:600,duration_ms:500};
+  assert.equal(data(await f.phone.call('phone_input',{lease_id,frame_id:frame.frame_id,request_id:'ordinary-scroll-01',action})).result.input_validation,'fresh_context');
+  frame = data(await f.phone.call('phone_observe',{ui:true,image:false})); f.adb.windowId = 'other';
+  assert.equal(data(await f.phone.call('phone_input',{lease_id,frame_id:frame.frame_id,request_id:'ordinary-scroll-02',action})).error,'PHONE_FRAME_CHANGED');
+  assert.equal(f.adb.writes.length,1);
+});
+
+test('swipe permits unrelated banner animation and dispatches its original gesture once', async t => {
+  const f = await fixture(t), lease_id = await f.acquire(), frame_id = await f.observe();
+  f.adb.png = await changedRectangle(f.adb.png, 0, 1900, 1080, 250);
+  const args = { lease_id, frame_id, request_id: 'animated-swipe-0001',
+    action: { type: 'swipe', x: 160, y: 1600, to_x: 680, to_y: 1600, duration_ms: 1100 } };
+  const result = data(await new PhoneService(f.config, f.adb).call('phone_input', args));
+  assert.equal(result.result.status, 'completed');
+  assert.equal(result.result.input_validation, 'stable_gesture_region');
+  await f.phone.call('phone_input', args);
+  assert.equal(f.adb.writes.length, 1);
+  assert.deepEqual(f.adb.writes[0]!.slice(-7), ['input', 'swipe', '160', '1600', '680', '1600', '1100']);
+});
+
+test('swipe rejects changes along the path and near the destination', async t => {
+  for (const [index, rectangle] of [[400, 1595, 10, 10], [700, 1620, 10, 10]].entries()) {
+    const f = await fixture(t), lease_id = await f.acquire(), frame_id = await f.observe();
+    f.adb.png = await changedRectangle(f.adb.png, rectangle[0]!, rectangle[1]!, rectangle[2]!, rectangle[3]!);
+    const result = data(await f.phone.call('phone_input', { lease_id, frame_id, request_id: `changed-swipe-000${index}`,
+      action: { type: 'swipe', x: 160, y: 1600, to_x: 680, to_y: 1600, duration_ms: 1100 } }));
+    assert.equal(result.error, 'PHONE_FRAME_CHANGED');
+    assert.equal(f.adb.writes.length, 0);
+  }
 });
 
 test('identical pixels with different PNG encoding pass and do not expose visual signatures', async t => {
@@ -257,7 +303,7 @@ test('identical pixels with different PNG encoding pass and do not expose visual
   const result = data(await f.phone.call('phone_input', { lease_id, frame_id,
     request_id: 'png-encoding-000001', action: { type: 'tap', x: 300, y: 500 } }));
   assert.equal(result.result.status, 'completed');
-  assert.equal(result.result.input_validation, 'exact_pixels');
+  assert.equal(result.result.input_validation, 'stable_target_region');
   assert.equal(Object.hasOwn(result, 'visual'), false);
   assert.equal(Object.hasOwn(result, 'window'), false);
 });
@@ -270,8 +316,8 @@ test('missing or malformed comparison metadata cannot relax a changed frame', as
     frame.visual = visual;
     await writeFile(file, JSON.stringify(frame));
     f.adb.png = await changedRectangle(f.adb.png, index * 100, 2000, 50, 50);
-    assert.equal(data(await f.phone.call('phone_input', { lease_id, frame_id,
-      request_id: `missing-signature${index}`, action: { type: 'tap', x: 300, y: 500 } })).error, 'PHONE_FRAME_CHANGED');
+    assert.match(data(await f.phone.call('phone_input', { lease_id, frame_id,
+      request_id: `missing-signature${index}`, action: { type: 'tap', x: 300, y: 500 } })).error, /PHONE_(FRAME_CHANGED|IMAGE_OBSERVATION_REQUIRED)/);
   }
   assert.equal(f.adb.writes.length, 0);
 });
@@ -445,6 +491,40 @@ test('MCP host command entry point enforces the phone guard and remains availabl
 });
 
 const semanticXml = (label = '普通按钮', enabled = 'true', position = '[100,200][300,300]') => `<?xml version="1.0"?><hierarchy rotation="0"><node package="com.example.app" class="Layout" enabled="true" bounds="[0,0][1080,2400]" clickable="false"><node package="com.example.app" class="Button" text="${label}" resource-id="app:id/button" enabled="${enabled}" clickable="true" bounds="${position}"/></node></hierarchy>`;
+
+const focusedEditorXml = () => semanticXml('已有内容').replace('class="Button"', 'class="android.widget.EditText" focused="true"');
+
+test('text revalidates the focused editable field with no screenshot despite animated pixels', async t => {
+  const f = await fixture(t), lease_id = await f.acquire(); f.adb.uiXml = focusedEditorXml();
+  const frame = data(await f.phone.call('phone_observe', { ui: true, image: false }));
+  assert.equal(frame.ui.elements[0].focused, true);
+  f.adb.png = await changedRectangle(f.adb.png, 0, 1200, 1080, 1000);
+  const args = { lease_id, frame_id: frame.frame_id, request_id: 'semantic-text-0001', action: { type: 'text', text: '芒果干噎酸奶', mode: 'replace' } };
+  const result = data(await new PhoneService(f.config, f.adb).call('phone_input', args));
+  assert.equal(result.result.status, 'completed');
+  assert.equal(result.result.input_validation, 'fresh_ui_text_target');
+  await f.phone.call('phone_input', args);
+  assert.equal(f.adb.writes.length, 1);
+  const persisted = await readFile(join(f.dir, 'frame.json'), 'utf8');
+  assert.equal(persisted.includes('已有内容'), false);
+});
+
+test('text rejects focus loss, replaced fields, moved fields and window changes before dispatch', async t => {
+  const f = await fixture(t), lease_id = await f.acquire();
+  for (const [index, mutate] of [
+    () => { f.adb.uiXml = f.adb.uiXml.replace('focused="true"', 'focused="false"'); },
+    () => { f.adb.uiXml = f.adb.uiXml.replace('app:id/button', 'app:id/other'); },
+    () => { f.adb.uiXml = f.adb.uiXml.replace('[100,200][300,300]', '[200,200][400,300]'); },
+    () => { f.adb.windowId = 'other'; }
+  ].entries()) {
+    f.adb.uiXml = focusedEditorXml();
+    const frame = data(await f.phone.call('phone_observe', { ui: true, image: false })); mutate();
+    const result = await f.phone.call('phone_input', { lease_id, frame_id: frame.frame_id, request_id: `semantic-text-fail${index}`,
+      action: { type: 'text', text: 'test', mode: 'replace' } });
+    assert.equal(result.isError, true);
+  }
+  assert.equal(f.adb.writes.length, 0);
+});
 
 test('semantic observation uses no screenshot and fresh target click survives unrelated pixel changes across processes', async t => {
   const f = await fixture(t), lease_id = await f.acquire(); f.adb.uiXml = semanticXml();

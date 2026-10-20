@@ -2,11 +2,11 @@ import { digest } from './store.js';
 
 type Bounds = [number, number, number, number];
 type Node = { tag: string; attrs: Record<string, string>; parent: Node | undefined; children: Node[] };
-export type UiElement = { element_id: string; text: string; resource_id: string; description: string; class: string; bounds: Bounds; click_bounds: Bounds };
+export type UiElement = { element_id: string; text: string; resource_id: string; description: string; class: string; bounds: Bounds; click_bounds: Bounds; focused?: boolean };
 export type UiNode = { text: string; resource_id: string; description: string; class: string; bounds: Bounds; enabled: boolean };
 export type UiSelector = { text?: string | undefined; resource_id?: string | undefined; description?: string | undefined; class?: string | undefined };
 export type UiSnapshot = { elements: UiElement[]; anchors: string[]; nodes?: UiNode[]; rawNodes?: Node[] };
-export type UiProof = { element_ids: string[]; anchors: string[] };
+export type UiProof = { element_ids: string[]; anchors: string[]; focused_editable_id?: string };
 
 // Only the bounded, entity-escaped node/hierarchy subset produced by Android's
 // UI dump is accepted. No DTD, external entities, HTML or executable content.
@@ -89,7 +89,8 @@ export function uiSnapshot(xml: string, packageName: string, width: number, heig
     })) continue;
     const element_id = digest(JSON.stringify([path.map(identity), b, click, subtree(target)]));
     elements.push({ element_id, text: node.attrs.text ?? '', resource_id: node.attrs['resource-id'] ?? '',
-      description: node.attrs['content-desc'] ?? '', class: node.attrs.class ?? '', bounds: b, click_bounds: click });
+      description: node.attrs['content-desc'] ?? '', class: node.attrs.class ?? '', bounds: b, click_bounds: click,
+      ...(node.attrs.focused === 'true' ? { focused: true } : {}) });
   }
   const visibleNodes: UiNode[] = [];
   for (const node of nodes) {
@@ -115,7 +116,11 @@ export function validateTouchPoint(snapshot: UiSnapshot, elementId: string, poin
     return !b || contains(b, ...point) === contains(b, ...center);
   });
 }
-export function uiProof(ui: UiSnapshot): UiProof { return { element_ids: ui.elements.map(e => e.element_id), anchors: ui.anchors }; }
+export function uiProof(ui: UiSnapshot): UiProof {
+  const editable = ui.elements.filter(e => e.focused && /(?:^|\.)EditText$/.test(e.class));
+  return { element_ids: ui.elements.map(e => e.element_id), anchors: ui.anchors,
+    ...(editable.length === 1 ? { focused_editable_id: editable[0]!.element_id } : {}) };
+}
 export function resolveUiTarget(expected: UiProof | undefined, current: UiSnapshot, elementId: string) {
   if (!expected || !Array.isArray(expected.element_ids) || !Array.isArray(expected.anchors)) throw new Error('PHONE_UI_OBSERVATION_REQUIRED');
   if (expected.element_ids.filter(id => id === elementId).length !== 1) throw new Error('PHONE_UI_TARGET_UNKNOWN_OR_AMBIGUOUS');
