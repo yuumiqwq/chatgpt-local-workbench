@@ -16,7 +16,7 @@ import { VERSION } from "./version.js";
 import { loadPhoneConfig } from "./phone/config.js";
 import { RealAdb } from "./phone/adb.js";
 import { PhoneService } from "./phone/service.js";
-import { PHONE_INSTRUCTIONS, registerPhoneTools } from "./phone/tools.js";
+import { PHONE_INSTRUCTIONS, PHONE_EFFICIENCY_INSTRUCTIONS, registerPhoneTools } from "./phone/tools.js";
 import { buildServerInstructions } from "./server-instructions.js";
 import { loadHostIdentity } from "./host-identity.js";
 import { CoreError, serializeError } from "./core/errors.js";
@@ -136,7 +136,7 @@ async function main(): Promise<void> {
   const phoneConfig = await loadPhoneConfig(resolve(configPath) + ".phone.json");
   const phone = phoneConfig ? new PhoneService(phoneConfig, new RealAdb(phoneConfig)) : undefined;
   const server = new McpServer({ name: "engineering-bridge", version: VERSION }, {
-    instructions: buildServerInstructions(identity, phone ? PHONE_INSTRUCTIONS : undefined)
+    instructions: buildServerInstructions(identity, phone ? `${PHONE_INSTRUCTIONS}\n\n${PHONE_EFFICIENCY_INSTRUCTIONS}` : undefined)
   });
   if (phone) registerPhoneTools(server, phone);
 

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add opt-in `observation:context` and `phone_observe(ui:false,image:false)` for short, predetermined input sequences. Intermediate actions return current application/window and IME readiness without screenshots, UI dumps or a fixed settling delay; callers use already observed targets and inspect a final UI/image observation. Return server action/observation timing and teach callers to reuse returned observations and consolidate cart review.
+
 - Remove all phone input pixel/region comparisons and UI subtree/page-anchor comparisons. Coordinate actions no longer capture a pre-action screenshot; semantic clicks use the referenced observation’s coordinates. Text checks the active input connection. Preserve device context, coordinate bounds, short leases, pause and durable request deduplication.
 
 - Prepare the installed Workbench IME when acquiring phone control with local text input enabled. Report readiness without blocking non-text operations if preparation fails, and reselect the IME on the next acquisition after a manual keyboard change.

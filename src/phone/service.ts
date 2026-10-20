@@ -20,7 +20,7 @@ const id = z.string().regex(/^[A-Za-z0-9_-]{16,128}$/);
 const pkg = z.string().regex(/^[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)+$/).max(200);
 const point = z.number().int().min(0).max(16384);
 const auth = { lease_id: id, request_id: id };
-const observationMode = z.enum(['auto', 'ui', 'image']).default('auto');
+const observationMode = z.enum(['auto', 'ui', 'image', 'context']).default('auto');
 const selector = z.object({ text: z.string().max(500).optional(), resource_id: z.string().max(500).optional(),
   description: z.string().max(500).optional(), class: z.string().max(200).optional() }).strict().refine(value => Object.keys(value).length > 0);
 const waitFor = z.object({ selector, state: z.enum(['visible', 'enabled', 'gone']).default('visible'),
@@ -47,7 +47,7 @@ export const phoneSchemas = {
 export type PhoneTool = keyof typeof phoneSchemas;
 type Lease = { hash: string; expires: number; epoch: string };
 const leaseSchema = z.object({ hash: z.string().regex(/^[a-f0-9]{64}$/), expires: z.number().finite().nonnegative(), epoch: z.string().min(1) }).strict();
-type Frame = { frame_id: string; timestamp: string; at: number; package: string | null; window: string; rotation: number; width: number; height: number; targets?: { id: string; point: [number, number] }[]; input_focus?: string };
+type Frame = { frame_id: string; timestamp: string; at: number; package: string | null; window: string; rotation: number; width: number; height: number; targets?: { id: string; point: [number, number] }[]; input_focus?: string; context_only?: true };
 type Request = { fingerprint: string; lease_hash: string; state: 'pending' | 'completed'; result?: unknown };
 const json = (value: unknown): CallToolResult => ({ content: [{ type: 'text', text: JSON.stringify(value) }] });
 
@@ -203,6 +203,15 @@ export class PhoneService {
     await this.store.save('frame.json', frame);
     return { frame, png: rendered.data, ui: uiResult, ...(semantic ? { semantic } : {}), rendered: { width: rendered.info.width, height: rendered.info.height }, reason: reason ?? 'requested_image' };
   }
+  private async captureContext(): Promise<Awaited<ReturnType<PhoneService['capture']>>> {
+    const before = await this.context(), focus = await this.inputFocus(before.package), after = await this.context();
+    if (JSON.stringify(before) !== JSON.stringify(after)) throw new Error('PHONE_FRAME_CHANGED_DURING_CAPTURE');
+    const at = this.now();
+    const frame: Frame = { ...after, at, timestamp: new Date(at).toISOString(), frame_id: token(),
+      context_only: true, ...(focus ? {input_focus: focus} : {}) };
+    await this.store.save('frame.json', frame);
+    return { frame, ui: {status:'not_requested'}, rendered: null, reason:'requested_context' };
+  }
   private async waitUntil(condition: z.infer<typeof waitFor>, image: boolean) {
     const start = performance.now(), deadline = start + condition.timeout_ms;
     let stableSince = start, previous = '', attempts = 0;
@@ -234,9 +243,10 @@ export class PhoneService {
     const { at: _at, window: _window, targets: _targets, input_focus: _focus, ...frame } = o.frame;
     return { content: [{ type: 'text', text: JSON.stringify({ ...frame, ui: o.ui, flag_secure: 'unknown', capture_atomic: false,
       rendered: o.rendered, coordinate_space: 'original_physical_pixels',
-      observation: { mode: o.png ? 'image' : 'ui', reason: o.reason },
+      observation: { mode: o.frame.context_only ? 'context' : o.png ? 'image' : 'ui', reason: o.reason,
+        input_ready: !!o.frame.input_focus },
       input_validation: 'No pixel, target-region, gesture-region, subtree or page-anchor comparison. tap_element uses coordinates from the referenced observation. Inputs check frame age, window/package/dimensions/rotation and coordinate bounds; text confirms the active IME connection. Lease, pause and request deduplication remain enforced.',
-      consistency: `${o.png ? 'fresh PNG' : 'fresh UI hierarchy'}; focused window, package, physical dimensions and rotation checked before and after; UI XML has a short collection race; secure regions remain unknown`, result: extra }) },
+      consistency: `${o.frame.context_only ? 'context only; page content not observed' : o.png ? 'fresh PNG' : 'fresh UI hierarchy'}; focused window, package, physical dimensions and rotation checked before and after; UI XML has a short collection race; secure regions remain unknown`, result: extra }) },
     ...(o.png ? [{ type: 'image' as const, mimeType: 'image/png', data: o.png.toString('base64') }] : [])] };
   }
   private async status() {
@@ -284,6 +294,8 @@ export class PhoneService {
     return json({ packages: matches.slice(args.offset, args.offset + args.limit), total: matches.length, cached_at: this.apps.at });
   }
   private async write(name: PhoneTool, args: Record<string, unknown>) {
+    const started = performance.now();
+    if (args.observation === 'context' && args.wait_for) throw new Error('PHONE_CONTEXT_WAIT_UNSUPPORTED');
     const key = args.lease_id as string, requestId = args.request_id as string;
     const file = `request-${digest(requestId)}.json`, fingerprint = createHmac('sha256', key).update(JSON.stringify({
       name, ...args, lease_id: undefined, ...(args.observation === 'auto' ? {observation:undefined} : {})
@@ -425,7 +437,8 @@ export class PhoneService {
         // screenshot. Retry only reads, never the action or its request ID.
         const waitCondition = args.wait_for ? waitFor.parse(args.wait_for) : undefined;
         const mode = observationMode.parse(args.observation);
-        if (!waitCondition) await delay(250);
+        const observationStarted = performance.now();
+        if (!waitCondition && mode !== 'context') await delay(250);
         let observation: Awaited<ReturnType<PhoneService['capture']>> | undefined;
         let waitResult: { status: string; attempts: number; elapsed_ms: number } | undefined;
         let fallbackReason: string | undefined;
@@ -451,7 +464,7 @@ export class PhoneService {
         for (let attempt = 0; !observation && attempt < 3; attempt++) {
           observationAttempts++;
           try {
-            observation = fallbackReason ? await this.capture(false)
+            observation = mode === 'context' ? await this.captureContext() : fallbackReason ? await this.capture(false)
               : await this.capture(mode !== 'image', mode === 'auto' ? 'auto' : mode === 'image');
             if (fallbackReason) observation.reason = fallbackReason;
             break;
@@ -473,9 +486,14 @@ export class PhoneService {
             ? scrollObservation(scrollBefore,observation.semantic,scrollRegion,scrollHorizontal) : undefined,
           wait: waitResult,
           observation_attempts: observationAttempts,
-          ui_transition: name === 'phone_input' ? 'fresh post-action observation returned; caller must check the intended result' : undefined,
+          ui_transition: name === 'phone_input' ? mode === 'context'
+            ? 'page content deferred; input_ready reports the active IME connection'
+            : 'fresh post-action observation returned; caller must check the intended result' : undefined,
           physical_panel_state: panelState,
-          target_app_observed: name === 'phone_open_app' ? observation.frame.package === args.package : undefined };
+          target_app_observed: name === 'phone_open_app' ? observation.frame.package === args.package : undefined,
+          timing: { before_observation_ms: Math.round(observationStarted-started),
+            observation_ms: Math.round(performance.now()-observationStarted),
+            total_ms: Math.round(performance.now()-started) } };
         await this.store.save(file, { ...record, state: 'completed', result });
         // A paused or expired lease is never silently resurrected.
         await this.renew(key).catch(() => {});
@@ -493,6 +511,7 @@ export class PhoneService {
       return await this.store.lock(async () => {
         if (name === 'server_status') return json(await this.status());
         if (name === 'phone_observe') {
+          if (args.ui === false && args.image === false && !args.wait_for) return this.observation(await this.captureContext());
           if (args.wait_for) {
             const waited = await this.waitUntil(waitFor.parse(args.wait_for), args.image as boolean);
             return this.observation(waited.observation, { wait: waited.wait });

@@ -76,6 +76,70 @@ class FakeAdb implements Adb {
   get writes() { return this.calls.filter(c => /shell (input |am start|am broadcast)/.test(c.join(' '))); }
 }
 const data = (result: CallToolResult) => JSON.parse((result.content[0] as {text: string}).text);
+
+test('focus and text can defer page observation until the final keyboard action', async t => {
+  const f=await fixture(t), lease_id=await f.acquire(), frame_id=await f.observe();
+  f.adb.calls=[];
+  const focused=await f.phone.call('phone_input',{lease_id,frame_id,request_id:'context-focus-00001',
+    action:{type:'tap',x:100,y:200},observation:'context'});
+  let frame=data(focused);
+  assert.equal(focused.content.length,1);
+  assert.equal(frame.observation.mode,'context');
+  assert.equal(frame.observation.input_ready,true);
+  assert.equal(frame.ui.status,'not_requested');
+  assert.equal(frame.result.timing.total_ms>=frame.result.timing.observation_ms,true);
+  const args={lease_id,frame_id:frame.frame_id,request_id:'context-text-000001',
+    action:{type:'text',text:'茉莉花茶',mode:'replace'},observation:'context'};
+  frame=data(await f.phone.call('phone_input',args));
+  assert.equal(frame.result.status,'completed');
+  assert.equal(f.adb.calls.some(a=>a.includes('screencap')||a.includes('uiautomator')),false);
+  assert.equal(data(await f.phone.call('phone_input',args)).replayed,true);
+  assert.equal(f.adb.writes.length,2);
+  const result=await f.phone.call('phone_input',{lease_id,frame_id:frame.frame_id,request_id:'context-enter-00001',
+    action:{type:'key',key:'ENTER'},observation:'image'});
+  assert.equal(data(result).observation.mode,'image');
+  assert.equal(result.content[1]?.type,'image');
+  assert.equal(f.adb.calls.filter(a=>a.includes('screencap')).length,1);
+  assert.equal(f.adb.writes.length,3);
+});
+
+test('context-only frames permit known coordinates but never invent semantic targets',async t=>{
+  const f=await fixture(t),lease_id=await f.acquire();
+  const frame=data(await f.phone.call('phone_input',{lease_id,frame_id:await f.observe(),request_id:'context-key-000001',
+    action:{type:'key',key:'BACK'},observation:'context'}));
+  const args={lease_id,frame_id:frame.frame_id,request_id:'context-point-00001',action:{type:'tap',x:200,y:300}};
+  assert.equal(data(await f.phone.call('phone_input',{...args,action:{type:'tap_element',element_id:'a'.repeat(64)}})).error,'PHONE_UI_TARGET_UNKNOWN_OR_AMBIGUOUS');
+  assert.equal(f.adb.writes.length,1);
+  assert.equal(data(await f.phone.call('phone_input',args)).result.status,'completed');
+  const screenshots=f.adb.calls.filter(a=>a.includes('screencap')).length;
+  const context=data(await f.phone.call('phone_observe',{ui:false,image:false}));
+  assert.equal(context.observation.mode,'context');
+  assert.equal(f.adb.calls.filter(a=>a.includes('screencap')).length,screenshots);
+});
+
+test('deferred observation retains focus freshness and rejects contradictory waits before dispatch',async t=>{
+  const f=await fixture(t),lease_id=await f.acquire(),frame_id=await f.observe();
+  const args={lease_id,frame_id,request_id:'context-invalid-001',action:{type:'tap',x:100,y:200},observation:'context'};
+  assert.equal(data(await f.phone.call('phone_input',{...args,wait_for:{selector:{text:'ready'}}})).error,'PHONE_CONTEXT_WAIT_UNSUPPORTED');
+  assert.equal(f.adb.writes.length,0);
+  const frame=data(await f.phone.call('phone_input',args));
+  f.adb.inputConnection='other';
+  const textArgs={lease_id,frame_id:frame.frame_id,request_id:'context-stale-text1',
+    action:{type:'text',text:'test',mode:'replace'},observation:'context'};
+  assert.equal(data(await f.phone.call('phone_input',textArgs)).error,'PHONE_UI_TEXT_FOCUS_CHANGED');
+  f.tick(11000);
+  assert.equal(data(await f.phone.call('phone_input',{...textArgs,request_id:'context-stale-text2'})).error,'PHONE_FRAME_EXPIRED');
+  assert.equal(f.adb.writes.length,1);
+});
+
+test('failed context capture preserves unknown outcomes and never repeats dispatched input',async t=>{
+  const f=await fixture(t),lease_id=await f.acquire(),frame_id=await f.observe();
+  f.adb.failAfterWrite=true;
+  const args={lease_id,frame_id,request_id:'context-unknown-001',action:{type:'tap',x:100,y:200},observation:'context'};
+  assert.equal(data(await f.phone.call('phone_input',args)).status,'outcome_unknown');
+  assert.equal(data(await f.phone.call('phone_input',args)).status,'outcome_unknown');
+  assert.equal(f.adb.writes.length,1);
+});
 async function fixture(t: test.TestContext) {
   const dir = await mkdtemp(join(tmpdir(), 'phone-test-'));
   t.after(() => rm(dir, { recursive: true, force: true }));
