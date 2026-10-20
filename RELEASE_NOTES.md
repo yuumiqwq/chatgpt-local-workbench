@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Fix ordinary scrolling in nested Android lists by selecting the innermost enclosing scrollable and dispatching Appium's `mobile: scrollGesture`. Preserve pointer gestures when the UI exposes no unique target, return the driver's `can_scroll_more` feedback, and never retry a dispatched gesture. Coordinate taps and drag gestures retain their existing timing and path behavior.
 - Poll waiting tasks every 500 ms instead of 100 ms to reduce repeated registry reads, while respecting the remaining timeout and cancellation signal.
 - Coordinate managed workspace registration and legacy migration across Bridge processes with a shared file lock. Preserve existing IDs and other processes' records, reusing the work registry's atomic JSON writer and removing the redundant catalog write queue.
 - Persist successful native unarchive transitions before session lookup, so overlapping status queries or a failed lookup cannot restore an obsolete archived flag.

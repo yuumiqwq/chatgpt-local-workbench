@@ -628,3 +628,47 @@ test('post-action wait timeout reports the observation and never repeats the ges
   assert.equal(result.result.wait.status, 'timeout'); assert.equal(result.result.request_sent, true);
   assert.equal(data(await phone.call('phone_input', args)).replayed, true); assert.equal(dispatched, 1);
 });
+
+test('ordinary scroll resolves nested lists and reports driver feedback with one dispatch', async t => {
+  const f = await fixture(t), lease_id = await f.acquire(), plans: TouchPlan[] = [];
+  const automation: PhoneAutomation = { ready: async () => {},
+    source: async () => '<hierarchy><node package="com.example.app" enabled="true" scrollable="true" bounds="[0,300][1080,2400]"><node package="com.example.app" enabled="true" scrollable="true" bounds="[0,600][1080,2400]"/></node></hierarchy>',
+    resolveScrollTarget: async xpath => { assert.equal(xpath,'/hierarchy/node[1]/node[1]'); return 'inner-list'; },
+    perform: async plan => { plans.push(plan); return {can_scroll_more:true}; }
+  };
+  const phone = new PhoneService(f.config,f.adb,Date.now,undefined,automation);
+  const frame = data(await phone.call('phone_observe', {ui:true,image:false}));
+  const args = {lease_id,frame_id:frame.frame_id,request_id:'native-scroll-dispatch-01',
+    action:{type:'scroll',x:790,y:1900,to_x:790,to_y:700,duration_ms:450}};
+  const result = data(await phone.call('phone_input',args));
+  assert.equal(result.result.status,'completed');
+  assert.equal(result.result.input_validation,'fresh_context');
+  assert.equal(result.result.touch.method,'scrollGesture');
+  assert.equal(result.result.touch.can_scroll_more,true);
+  assert.equal(plans[0]!.scroll!.elementId,'inner-list');
+  assert.equal(data(await phone.call('phone_input',args)).replayed,true);
+  assert.equal(plans.length,1); assert.equal(f.adb.writes.length,0);
+});
+
+test('ordinary scroll retains touch fallback for absent or unreadable UI and rejects a window race', async t => {
+  const f = await fixture(t), lease_id = await f.acquire(), plans: TouchPlan[] = [];
+  let source = '<hierarchy></hierarchy>', race = false;
+  const automation: PhoneAutomation = {ready:async()=>{},resolveScrollTarget:async()=>undefined,
+    source:async()=>{ if(race) f.adb.windowId='new-window'; return source; },
+    perform:async plan=>{plans.push(plan);}
+  };
+  const phone = new PhoneService(f.config,f.adb,Date.now,undefined,automation);
+  for (const [index, xml] of ['<hierarchy></hierarchy>','malformed'].entries()) {
+    source=xml;
+    const frame=data(await phone.call('phone_observe',{}));
+    const result=data(await phone.call('phone_input',{lease_id,frame_id:frame.frame_id,request_id:`fallback-scroll-request-${index}`,
+      action:{type:'scroll',x:790,y:1900,to_x:790,to_y:700}}));
+    assert.equal(result.result.touch.method,'pointer_actions');
+    assert.equal(plans.at(-1)!.scroll,undefined);
+  }
+  const frame=data(await phone.call('phone_observe',{})); race=true;
+  const result=data(await phone.call('phone_input',{lease_id,frame_id:frame.frame_id,request_id:'native-scroll-window-race',
+    action:{type:'scroll',x:790,y:1900,to_x:790,to_y:700}}));
+  assert.equal(result.error,'PHONE_FRAME_CHANGED_DURING_CAPTURE');
+  assert.equal(plans.length,2); assert.equal(f.adb.writes.length,0);
+});

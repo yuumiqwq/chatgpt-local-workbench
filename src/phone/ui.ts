@@ -6,6 +6,7 @@ export type UiElement = { element_id: string; text: string; resource_id: string;
 export type UiNode = { text: string; resource_id: string; description: string; class: string; bounds: Bounds; enabled: boolean };
 export type UiSelector = { text?: string | undefined; resource_id?: string | undefined; description?: string | undefined; class?: string | undefined };
 export type UiSnapshot = { elements: UiElement[]; anchors: string[]; nodes?: UiNode[]; rawNodes?: Node[] };
+export type UiScrollTarget = { xpath: string; bounds: Bounds };
 export type UiProof = { element_ids: string[]; anchors: string[]; focused_editable_id?: string };
 
 // Only the bounded, entity-escaped node/hierarchy subset produced by Android's
@@ -104,6 +105,25 @@ export function uiSnapshot(xml: string, packageName: string, width: number, heig
 export function matchesUi(snapshot: UiSnapshot, selector: UiSelector, enabled = false): UiNode[] {
   return (snapshot.nodes ?? []).filter(node => (!enabled || node.enabled) &&
     Object.entries(selector).every(([key, value]) => value === undefined || node[key as keyof UiSelector] === value));
+}
+export function scrollTarget(snapshot: UiSnapshot, packageName: string, width: number, height: number,
+  from: [number, number], to: [number, number]): UiScrollTarget | undefined {
+  const nodes = snapshot.rawNodes ?? [];
+  const candidates = nodes.filter(node => {
+    const b = bounds(node, width, height);
+    return node.attrs.package === packageName && node.attrs.scrollable === 'true' && usable(node) &&
+      b && contains(b, ...from) && contains(b, ...to);
+  });
+  // An inner list can intercept coordinate gestures through its outer scroller.
+  // Select the deepest enclosing scrollable; overlapping siblings are ambiguous.
+  const deepest = candidates.filter(node => !candidates.some(other => other !== node && parents(other).includes(node)));
+  if (deepest.length !== 1) return;
+  const target = deepest[0]!;
+  const path = parents(target).map(node => {
+    const siblings = (node.parent?.children ?? nodes.filter(n => !n.parent)).filter(n => n.tag === node.tag);
+    return `${node.tag}[${siblings.indexOf(node) + 1}]`;
+  });
+  return { xpath: `/hierarchy/${path.join('/')}`, bounds: bounds(target, width, height)! };
 }
 export function validateTouchPoint(snapshot: UiSnapshot, elementId: string, point: [number, number]): boolean {
   const element = snapshot.elements.find(item => item.element_id === elementId);

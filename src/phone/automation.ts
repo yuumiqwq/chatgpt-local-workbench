@@ -6,7 +6,8 @@ import type { TouchPlan } from './gestures.js';
 export interface PhoneAutomation {
   ready(): Promise<void>;
   source(): Promise<string>;
-  perform(plan: TouchPlan): Promise<void>;
+  resolveScrollTarget?(xpath: string): Promise<string | undefined>;
+  perform(plan: TouchPlan): Promise<void | { can_scroll_more: boolean }>;
 }
 type Session = { id: string; serial: string; url: string };
 class DriverError extends Error { constructor(readonly code: string, readonly detail?: string) { super('PHONE_AUTOMATION_FAILED'); } }
@@ -88,6 +89,21 @@ export class AppiumAutomation implements PhoneAutomation {
     // The service prepares the session before recording the write intent.
     // Never recreate a session or replay a gesture after a dispatch error.
     if (!this.session) throw new Error('PHONE_AUTOMATION_NOT_READY');
+    if (plan.scroll) {
+      const more = await this.http(`/session/${this.session.id}/execute/sync`, 'POST',
+        { script: 'mobile: scrollGesture', args: [plan.scroll] });
+      if (typeof more !== 'boolean') throw new Error('PHONE_AUTOMATION_INVALID_RESPONSE');
+      return { can_scroll_more: more };
+    }
     await this.http(`/session/${this.session.id}/actions`, 'POST', { actions: plan.actions });
+  }
+  async resolveScrollTarget(xpath: string): Promise<string | undefined> {
+    if (!this.session) throw new Error('PHONE_AUTOMATION_NOT_READY');
+    const elements = await this.http(`/session/${this.session.id}/elements`, 'POST', { using: 'xpath', value: xpath });
+    if (!Array.isArray(elements)) throw new Error('PHONE_AUTOMATION_INVALID_RESPONSE');
+    if (elements.length !== 1) return;
+    const id = elements[0]?.['element-6066-11e4-a52e-4f735466cecf'];
+    if (typeof id !== 'string' || !/^[\w-]{1,128}$/.test(id)) throw new Error('PHONE_AUTOMATION_INVALID_RESPONSE');
+    return id;
   }
 }

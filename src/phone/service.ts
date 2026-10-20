@@ -10,10 +10,10 @@ import { VERSION } from '../version.js';
 import { HostError } from '../host/host-policy.js';
 import { ScrcpyPanel, physicalPanelState, type PhonePanel } from './panel.js';
 import { visualSignature, stableTapTarget, stableSwipeTarget, type VisualSignature } from './visual.js';
-import { uiSnapshot, uiProof, resolveUiTarget, matchesUi, validateTouchPoint, type UiProof, type UiSnapshot } from './ui.js';
+import { uiSnapshot, uiProof, resolveUiTarget, matchesUi, validateTouchPoint, scrollTarget, type UiProof, type UiSnapshot } from './ui.js';
 import { setTimeout as delay } from 'node:timers/promises';
 import { AppiumAutomation, type PhoneAutomation } from './automation.js';
-import { touchGesture, touchPoint, type TouchPlan } from './gestures.js';
+import { touchGesture, touchPoint, nativeScroll, type TouchPlan } from './gestures.js';
 import { inputFocusProof } from './focus.js';
 
 const id = z.string().regex(/^[A-Za-z0-9_-]{16,128}$/);
@@ -216,7 +216,8 @@ export class PhoneService {
     const physicalSize = size ? /Physical size: (\d+)x(\d+)/.exec(size) : null;
     return { hostname: hostname(), service_version: VERSION, phone_protocol_version: '1', input_validation_version: 'action-target-v3', capabilities: Object.keys(phoneSchemas),
       semantic_input: { observe: { ui: true, image: false }, action: 'tap_element', target: 'element_id from fresh ui.elements; identify by text/resource_id/description', post_action_observation_retries: 2,
-        touch_backend: this.automation ? 'appium_uiautomator2' : 'adb', condition_wait: true },
+        touch_backend: this.automation ? 'appium_uiautomator2' : 'adb', condition_wait: true,
+        scroll_backend: this.automation?.resolveScrollTarget ? 'innermost_scrollable_then_touch' : 'touch' },
       tunnel_status: 'unknown', adb: { serial: this.config.serial, state }, first_unlock: 'unknown',
       battery: { percent: level !== null && scale !== null && scale > 0 ? level * 100 / scale : null,
         charging: chargingStatus === 2 ? true : chargingStatus !== null && [3, 4, 5].includes(chargingStatus) ? false : null,
@@ -309,6 +310,24 @@ export class PhoneService {
           if (this.automation && ['tap', 'long_press', 'swipe', 'scroll'].includes(a.type) && 'x' in a) {
             gesture = a.type === 'swipe' || a.type === 'scroll' ? touchGesture([a.x, a.y], { to: [a.to_x, a.to_y], duration_ms: a.duration_ms })
               : touchGesture([a.x, a.y], a.type === 'long_press' ? { duration_ms: a.duration_ms } : {});
+            if (a.type === 'scroll' && this.automation.resolveScrollTarget) {
+              const scrollContext = { package: current.package!, window: current.window, rotation: current.rotation, width: current.width, height: current.height };
+              let snapshot: UiSnapshot | undefined;
+              try { snapshot = (await this.readUi(scrollContext)).snapshot; }
+              catch (e) {
+                if (!(e instanceof Error) || !['PHONE_UI_DUMP_INVALID', 'PHONE_UI_DUMP_FAILED'].includes(e.message)) throw e;
+              }
+              const target = snapshot && scrollTarget(snapshot, current.package!, current.width, current.height, [a.x, a.y], [a.to_x, a.to_y]);
+              if (target) {
+                const elementId = await this.automation.resolveScrollTarget(target.xpath);
+                if (elementId) {
+                  const scroll = nativeScroll(elementId, target.bounds, [a.x, a.y], [a.to_x, a.to_y], a.duration_ms);
+                  if (scroll) gesture.scroll = scroll;
+                }
+              }
+              if (JSON.stringify(await this.context()) !== JSON.stringify(scrollContext)) throw new Error('PHONE_FRAME_CHANGED_DURING_CAPTURE');
+              if (this.now() - expected.at > this.config.frame_seconds * 1000) throw new Error('PHONE_FRAME_EXPIRED');
+            }
           }
           if (a.type === 'tap') command = ['input', 'tap', String(a.x), String(a.y)];
           else if (a.type === 'long_press') command = ['input', 'swipe', String(a.x), String(a.y), String(a.x), String(a.y), String(a.duration_ms)];
@@ -350,7 +369,7 @@ export class PhoneService {
       await this.store.save(file, record);
       await this.lease(key); // Local pause revokes the capability before dispatch.
       try {
-        if (gesture) await this.automation!.perform(gesture);
+        const touchResult = gesture ? await this.automation!.perform(gesture) : undefined;
         const output = command ? await this.shell(...command) : '';
         let panelState: 'off' | 'on' | 'unknown' | undefined;
         if (turnPanelOff) {
@@ -382,7 +401,10 @@ export class PhoneService {
         if (!observation) throw new Error('PHONE_SCREENSHOT_FAILED');
         const result = { status: 'completed', request_id: requestId, request_sent: true,
           input_validation: inputValidation,
-          touch: gesture ? { backend: 'appium_uiautomator2', duration_ms: gesture.duration_ms, points: gesture.points } : undefined,
+          touch: gesture ? gesture.scroll
+            ? { backend: 'appium_uiautomator2', method: 'scrollGesture', direction: gesture.scroll.direction,
+                percent: gesture.scroll.percent, speed: gesture.scroll.speed, can_scroll_more: touchResult?.can_scroll_more }
+            : { backend: 'appium_uiautomator2', method: 'pointer_actions', duration_ms: gesture.duration_ms, points: gesture.points } : undefined,
           wait: waitResult,
           observation_attempts: observationAttempts,
           ui_transition: name === 'phone_input' ? 'fresh post-action observation returned; caller must check the intended result' : undefined,

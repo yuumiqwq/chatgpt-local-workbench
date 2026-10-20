@@ -30,6 +30,8 @@ ADB 位于真实用户配置目录下的 `CloudPhoneServer\scrcpy-win64-v5.0.1\a
 
 版本 `1.7.0-local.7` 使用 `action-target-v3`，取消全部整屏像素一致及整屏变化面积限制。坐标点击和长按检查目标附近像素，拖动 `swipe` 检查起点到终点之间的区域；普通翻页使用 `scroll`，与按键一样只核对当前窗口、应用、尺寸和旋转。文字输入确认当前 EditText 或 Workbench IME 的活动输入连接，控件点击继续重新定位目标和页面锚点。动作后返回新观察，调用方据此确认结果。观察响应与动作结果中的 `input_validation` 给出实际使用的检查方式。
 
+版本 `1.7.0-local.8` 的普通滚动会从新读取的控件树中选择包含手势起终点的最内层滚动容器，并调用 Appium `mobile: scrollGesture`；页面未提供唯一容器时沿用坐标触摸手势。`touch.method` 标明执行方式，专用滚动接口还返回驱动报告的 `can_scroll_more`，实际移动情况通过动作后的画面确认。点击和拖动的既有实现保持不变，接口参数无需调整。
+
 由实际运行账户在 Lenovo checkout 内执行：
 
 ```powershell
