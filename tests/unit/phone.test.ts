@@ -4,7 +4,7 @@ import { tmpdir, hostname } from 'node:os';
 import { join } from 'node:path';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { randomBytes } from 'node:crypto';
+import { randomBytes, createHmac } from 'node:crypto';
 import test from 'node:test';
 import sharp from 'sharp';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
@@ -22,6 +22,7 @@ import { registerHostTools } from '../../src/host/host-tools.js';
 import { physicalPanelState } from '../../src/phone/panel.js';
 import type { PhoneAutomation } from '../../src/phone/automation.js';
 import type { TouchPlan } from '../../src/phone/gestures.js';
+import { digest } from '../../src/phone/store.js';
 
 class FakeAdb implements Adb {
   calls: string[][] = [];
@@ -541,7 +542,8 @@ test('semantic observation uses no screenshot and fresh target click survives un
   assert.deepEqual(f.adb.writes[0], ['shell', 'input', 'tap', '200', '250']);
   const firstWrite = f.adb.calls.findIndex(c => c.includes('tap'));
   assert.equal(f.adb.calls.slice(0, firstWrite).some(c => c.includes('screencap')), false);
-  assert.equal(f.adb.calls.filter(c => c.includes('uiautomator')).length, 2);
+  // Initial observation, target revalidation, and automatic post-action observation.
+  assert.equal(f.adb.calls.filter(c => c.includes('uiautomator')).length, 3);
 });
 
 test('semantic target rename, movement, disablement and missing UI cannot dispatch', async t => {
@@ -671,4 +673,66 @@ test('ordinary scroll retains touch fallback for absent or unreadable UI and rej
     action:{type:'scroll',x:790,y:1900,to_x:790,to_y:700}}));
   assert.equal(result.error,'PHONE_FRAME_CHANGED_DURING_CAPTURE');
   assert.equal(plans.length,2); assert.equal(f.adb.writes.length,0);
+});
+
+const richXml=()=>semanticXml('打开商品详情', 'true', '[100,500][500,650]').replace('</hierarchy>',
+  '<node package="com.example.app" enabled="true" class="android.widget.TextView" text="商品价格 25.90 元" bounds="[100,700][600,850]"/></hierarchy>');
+
+test('automatic post-action observation returns useful controls without taking a screenshot',async t=>{
+  const f=await fixture(t),lease_id=await f.acquire(); f.adb.uiXml=richXml();
+  const frame=data(await f.phone.call('phone_observe',{ui:true,image:false}));
+  const args={lease_id,frame_id:frame.frame_id,request_id:'auto-ui-result-0001',action:{type:'tap_element',element_id:frame.ui.elements[0].element_id}};
+  const response=await f.phone.call('phone_input',args), result=data(response);
+  assert.equal(result.result.status,'completed');
+  assert.equal(result.observation.mode,'ui'); assert.equal(result.observation.reason,'ui_sufficient');
+  assert.equal(response.content.length,1); assert.equal(result.rendered,null);
+  assert.equal(result.ui.nodes.some((n:any)=>n.text==='商品价格 25.90 元'),true);
+  assert.equal(f.adb.calls.filter(a=>a.includes('screencap')).length,0);
+  assert.equal(data(await f.phone.call('phone_input',args)).replayed,true); assert.equal(f.adb.writes.length,1);
+  const next=await f.phone.call('phone_input',{lease_id,frame_id:result.frame_id,request_id:'auto-ui-next-0001',
+    action:{type:'tap_element',element_id:result.ui.elements[0].element_id}});
+  assert.equal(data(next).result.status,'completed'); assert.equal(f.adb.calls.some(a=>a.includes('screencap')),false);
+});
+
+test('automatic post-action screenshot fallback handles sparse, visual and invalid UI without replay',async t=>{
+  const f=await fixture(t),lease_id=await f.acquire();
+  for(const [index,[xml,reason]] of [
+    ['<hierarchy></hierarchy>','sparse_ui'],
+    [richXml().replace('</hierarchy>','<node package="com.example.app" enabled="true" class="android.widget.ImageView" bounds="[0,1000][1080,2300]"/></hierarchy>'),'unlabelled_visual_region'],
+    ['malformed','ui_unavailable']
+  ].entries()){
+    f.adb.uiXml=xml!;
+    const frame=await f.observe(), before=f.adb.calls.filter(a=>a.includes('screencap')).length;
+    const args={lease_id,frame_id:frame,request_id:`auto-fallback-case-${index}`,action:{type:'key',key:'BACK'}};
+    const response=await f.phone.call('phone_input',args),result=data(response);
+    assert.equal(result.result.status,'completed'); assert.equal(result.observation.reason,reason);
+    assert.equal(response.content[1]?.type,'image');
+    assert.equal(f.adb.calls.filter(a=>a.includes('screencap')).length-before,1);
+    assert.equal(data(await f.phone.call('phone_input',args)).replayed,true);
+  }
+  assert.equal(f.adb.writes.length,3);
+});
+
+test('explicit observation modes and condition waits preserve caller choice',async t=>{
+  const f=await fixture(t),lease_id=await f.acquire(); f.adb.uiXml=richXml();
+  for(const [index,observation] of ['image','ui','auto'].entries()){
+    const frame=data(await f.phone.call('phone_observe',{ui:true,image:false}));
+    const before=f.adb.calls.filter(a=>a.includes('screencap')).length;
+    const response=await f.phone.call('phone_input',{lease_id,frame_id:frame.frame_id,request_id:`observation-mode-${index}`,observation,
+      action:{type:'key',key:'BACK'},wait_for:{selector:{text:'商品价格 25.90 元'},stable_ms:0,timeout_ms:100}});
+    const result=data(response);
+    assert.equal(result.result.wait.status,'matched');
+    assert.equal(result.observation.mode,observation==='image'?'image':'ui');
+    assert.equal(f.adb.calls.filter(a=>a.includes('screencap')).length-before,observation==='image'?1:0);
+  }
+});
+
+test('adding the default observation mode preserves durable receipts written by older versions',async t=>{
+  const f=await fixture(t),lease_id=await f.acquire();
+  const args={lease_id,frame_id:await f.observe(),request_id:'pre-observation-upgrade',action:{type:'key',key:'BACK'}};
+  const legacyArgs={...phoneSchemas.phone_input.parse(args),observation:undefined};
+  const fingerprint=createHmac('sha256',lease_id).update(JSON.stringify({name:'phone_input',...legacyArgs,lease_id:undefined})).digest('hex');
+  await f.phone.store.save(`request-${digest(args.request_id)}.json`,{fingerprint,lease_hash:digest(lease_id),state:'completed',result:{status:'completed'}});
+  assert.equal(data(await f.phone.call('phone_input',args)).replayed,true);
+  assert.equal(f.adb.writes.length,0);
 });

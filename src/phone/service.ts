@@ -13,13 +13,15 @@ import { visualSignature, stableTapTarget, stableSwipeTarget, type VisualSignatu
 import { uiSnapshot, uiProof, resolveUiTarget, matchesUi, validateTouchPoint, scrollTarget, type UiProof, type UiSnapshot } from './ui.js';
 import { setTimeout as delay } from 'node:timers/promises';
 import { AppiumAutomation, type PhoneAutomation } from './automation.js';
-import { touchGesture, touchPoint, nativeScroll, type TouchPlan } from './gestures.js';
+import { touchGesture, touchPoint, nativeScroll, varyScrollDuration, type TouchPlan } from './gestures.js';
 import { inputFocusProof } from './focus.js';
+import { imageFallbackReason } from './observation.js';
 
 const id = z.string().regex(/^[A-Za-z0-9_-]{16,128}$/);
 const pkg = z.string().regex(/^[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)+$/).max(200);
 const point = z.number().int().min(0).max(16384);
 const auth = { lease_id: id, request_id: id };
+const observationMode = z.enum(['auto', 'ui', 'image']).default('auto');
 const selector = z.object({ text: z.string().max(500).optional(), resource_id: z.string().max(500).optional(),
   description: z.string().max(500).optional(), class: z.string().max(200).optional() }).strict().refine(value => Object.keys(value).length > 0);
 const waitFor = z.object({ selector, state: z.enum(['visible', 'enabled', 'gone']).default('visible'),
@@ -30,8 +32,8 @@ export const phoneSchemas = {
   phone_release_control: z.object({ lease_id: id }).strict(),
   phone_observe: z.object({ ui: z.boolean().default(false), image: z.boolean().default(true), wait_for: waitFor.optional() }).strict(),
   phone_list_apps: z.object({ search: z.string().max(100).default(''), offset: z.number().int().min(0).max(10000).default(0), limit: z.number().int().min(1).max(100).default(50), refresh: z.boolean().default(false) }).strict(),
-  phone_open_app: z.object({ ...auth, package: pkg, wait_for: waitFor.optional() }).strict(),
-  phone_input: z.object({ ...auth, frame_id: id, wait_for: waitFor.optional(), action: z.discriminatedUnion('type', [
+  phone_open_app: z.object({ ...auth, package: pkg, wait_for: waitFor.optional(), observation: observationMode }).strict(),
+  phone_input: z.object({ ...auth, frame_id: id, wait_for: waitFor.optional(), observation: observationMode, action: z.discriminatedUnion('type', [
     z.object({ type: z.literal('tap_element'), element_id: z.string().regex(/^[a-f0-9]{64}$/) }).strict(),
     z.object({ type: z.literal('tap'), x: point, y: point }).strict(),
     z.object({ type: z.literal('long_press'), x: point, y: point, duration_ms: z.number().int().min(400).max(2000).default(600) }).strict(),
@@ -40,8 +42,8 @@ export const phoneSchemas = {
     z.object({ type: z.literal('key'), key: z.enum(['BACK', 'HOME', 'APP_SWITCH', 'ENTER', 'DEL']) }).strict(),
     z.object({ type: z.literal('text'), text: z.string().min(1).max(4096), mode: z.enum(['append', 'replace']) }).strict()
   ]) }).strict(),
-  phone_display: z.object({ ...auth, action: z.enum(['physical_off', 'wake']) }).strict(),
-  phone_recover: z.object({ ...auth, action: z.enum(['check', 'reconnect', 'wake']) }).strict()
+  phone_display: z.object({ ...auth, action: z.enum(['physical_off', 'wake']), observation: observationMode }).strict(),
+  phone_recover: z.object({ ...auth, action: z.enum(['check', 'reconnect', 'wake']), observation: observationMode }).strict()
 };
 export type PhoneTool = keyof typeof phoneSchemas;
 type Lease = { hash: string; expires: number; epoch: string };
@@ -125,15 +127,34 @@ export class PhoneService {
     try { return inputFocusProof(await this.shell('dumpsys', 'input_method'), packageName); }
     catch { return undefined; }
   }
-  private async capture(ui: boolean, image = true): Promise<{ frame: Frame; png?: Buffer; ui: unknown; rendered: { width: number; height: number } | null; semantic?: UiSnapshot }> {
+  private async capture(ui: boolean, image: boolean | 'auto' = true): Promise<{ frame: Frame; png?: Buffer; ui: unknown; rendered: { width: number; height: number } | null; semantic?: UiSnapshot; reason?: string }> {
     if (!ui && !image) throw new Error('PHONE_OBSERVATION_REQUIRED');
     const before = await this.context();
-    if (!image) {
-      const fresh = await this.readUi(before), capturedAt = this.now(), focus = await this.inputFocus(before.package), after = await this.context();
+    let fresh: Awaited<ReturnType<PhoneService['readUi']>> | undefined;
+    let reason: string | undefined;
+    let uiResult: unknown = { status: 'not_requested' };
+    if (ui || image === 'auto') {
+      try { fresh = await this.readUi(before); }
+      catch (e) {
+        if (image !== 'auto') throw e;
+        reason = 'ui_unavailable'; uiResult = { status: 'unavailable', trusted: false };
+      }
+      if (fresh) {
+        uiResult = { status: 'fresh', ...(image === true ? {xml:fresh.xml} : {}),
+          elements: fresh.snapshot.elements, nodes: fresh.snapshot.nodes, trusted: false };
+        if (Buffer.byteLength(JSON.stringify(uiResult)) > 512 * 1024) {
+          if (image !== 'auto') throw new Error('PHONE_OBSERVATION_TOO_LARGE');
+          fresh = undefined; reason = 'ui_too_large'; uiResult = { status: 'too_large', trusted: false };
+        } else if (image === 'auto') reason = imageFallbackReason(fresh.snapshot, before.width, before.height);
+      }
+    }
+    if (image === false || (image === 'auto' && !reason)) {
+      if (!fresh) throw new Error('PHONE_UI_DUMP_FAILED');
+      const capturedAt = this.now(), focus = await this.inputFocus(before.package), after = await this.context();
       if (JSON.stringify(before) !== JSON.stringify(after)) throw new Error('PHONE_FRAME_CHANGED_DURING_CAPTURE');
       const frame: Frame = { ...after, frame_id: token(), timestamp: new Date(capturedAt).toISOString(), at: capturedAt, ui_proof: uiProof(fresh.snapshot), ...(focus ? {input_focus:focus} : {}) };
       await this.store.save('frame.json', frame);
-      return { frame, ui: { status: 'fresh', elements: fresh.snapshot.elements, nodes: fresh.snapshot.nodes, trusted: false }, semantic: fresh.snapshot, rendered: null };
+      return { frame, ui: uiResult, semantic: fresh.snapshot, rendered: null, reason: image === 'auto' ? 'ui_sufficient' : 'requested_ui' };
     }
     const png = await this.adb.run(['exec-out', 'screencap', '-p']);
     const capturedAt = this.now();
@@ -141,13 +162,7 @@ export class PhoneService {
     const width = png.readUInt32BE(16), height = png.readUInt32BE(20);
     if (!width || !height || width > 16384 || height > 16384) throw new Error('PHONE_INVALID_PNG');
     if (width !== before.width || height !== before.height) throw new Error('PHONE_FRAME_CHANGED_DURING_CAPTURE');
-    let uiResult: unknown = { status: 'not_requested' };
-    let semantic: UiSnapshot | undefined;
-    if (ui) {
-      // stdout-only fresh dump: no shared device XML path and no last-known cache.
-      const fresh = await this.readUi(before); semantic = fresh.snapshot;
-      uiResult = { status: 'fresh', xml: fresh.xml, elements: semantic.elements, nodes: semantic.nodes, trusted: false };
-    }
+    const semantic = fresh?.snapshot;
     const focus = await this.inputFocus(before.package), after = await this.context();
     if (JSON.stringify(before) !== JSON.stringify(after)) throw new Error('PHONE_FRAME_CHANGED_DURING_CAPTURE');
     // A full serialized response stays comfortably below the tunnel's 10 MiB limit.
@@ -161,7 +176,7 @@ export class PhoneService {
       .timeout({ seconds: 3 }).png({ compressionLevel: 9 }).toBuffer({ resolveWithObject: true });
     if (rendered.data.length > 3 * 1024 * 1024 || Buffer.byteLength(JSON.stringify(uiResult)) > 512 * 1024) throw new Error('PHONE_OBSERVATION_TOO_LARGE');
     await this.store.save('frame.json', frame);
-    return { frame, png: rendered.data, ui: uiResult, ...(semantic ? { semantic } : {}), rendered: { width: rendered.info.width, height: rendered.info.height } };
+    return { frame, png: rendered.data, ui: uiResult, ...(semantic ? { semantic } : {}), rendered: { width: rendered.info.width, height: rendered.info.height }, reason: reason ?? 'requested_image' };
   }
   private async waitUntil(condition: z.infer<typeof waitFor>, image: boolean) {
     const start = performance.now(), deadline = start + condition.timeout_ms;
@@ -194,6 +209,7 @@ export class PhoneService {
     const { hash: _hash, at: _at, visual: _visual, window: _window, ui_proof: _proof, input_focus: _focus, ...frame } = o.frame;
     return { content: [{ type: 'text', text: JSON.stringify({ ...frame, ui: o.ui, flag_secure: 'unknown', capture_atomic: false,
       rendered: o.rendered, coordinate_space: 'original_physical_pixels',
+      observation: { mode: o.png ? 'image' : 'ui', reason: o.reason },
       input_validation: 'No whole-screen pixel comparison or changed-area threshold. tap_element revalidates the target and page anchors. Coordinate tap/long_press protect the target neighborhood; swipe protects its gesture region. Use scroll for ordinary navigation, with context checks only. Text revalidates the focused EditText or active IME connection. Keys use context checks. All paths check fresh window/package/dimensions/rotation.',
       consistency: `${o.png ? 'fresh PNG' : 'fresh UI hierarchy'}; focused window, package, physical dimensions and rotation checked before and after; UI XML has a short collection race; secure regions remain unknown`, result: extra }) },
     ...(o.png ? [{ type: 'image' as const, mimeType: 'image/png', data: o.png.toString('base64') }] : [])] };
@@ -217,7 +233,9 @@ export class PhoneService {
     return { hostname: hostname(), service_version: VERSION, phone_protocol_version: '1', input_validation_version: 'action-target-v3', capabilities: Object.keys(phoneSchemas),
       semantic_input: { observe: { ui: true, image: false }, action: 'tap_element', target: 'element_id from fresh ui.elements; identify by text/resource_id/description', post_action_observation_retries: 2,
         touch_backend: this.automation ? 'appium_uiautomator2' : 'adb', condition_wait: true,
-        scroll_backend: this.automation?.resolveScrollTarget ? 'innermost_scrollable_then_touch' : 'touch' },
+        scroll_backend: this.automation?.resolveScrollTarget ? 'innermost_scrollable_then_touch' : 'touch',
+        scroll_variation: { duration_percent: 8, native_distance_percent: 3, added_pause_ms: 0 },
+        post_action_observation: 'auto_ui_with_image_fallback' },
       tunnel_status: 'unknown', adb: { serial: this.config.serial, state }, first_unlock: 'unknown',
       battery: { percent: level !== null && scale !== null && scale > 0 ? level * 100 / scale : null,
         charging: chargingStatus === 2 ? true : chargingStatus !== null && [3, 4, 5].includes(chargingStatus) ? false : null,
@@ -242,7 +260,9 @@ export class PhoneService {
   }
   private async write(name: PhoneTool, args: Record<string, unknown>) {
     const key = args.lease_id as string, requestId = args.request_id as string;
-    const file = `request-${digest(requestId)}.json`, fingerprint = createHmac('sha256', key).update(JSON.stringify({ name, ...args, lease_id: undefined })).digest('hex');
+    const file = `request-${digest(requestId)}.json`, fingerprint = createHmac('sha256', key).update(JSON.stringify({
+      name, ...args, lease_id: undefined, ...(args.observation === 'auto' ? {observation:undefined} : {})
+    })).digest('hex');
     // Check the durable receipt even if a crashed process left the operation lock behind.
     const previous = await this.store.read<Request>(file);
     if (previous) {
@@ -267,6 +287,7 @@ export class PhoneService {
         const expected = await this.store.read<Frame>('frame.json');
         if (!expected || expected.frame_id !== input.frame_id || this.now() - expected.at > this.config.frame_seconds * 1000) throw new Error('PHONE_FRAME_EXPIRED');
         const a = input.action;
+        const scrollDuration = a.type === 'scroll' ? varyScrollDuration(a.duration_ms) : undefined;
         if ('x' in a && (a.x >= expected.width || a.y >= expected.height || ('to_x' in a && (a.to_x >= expected.width || a.to_y >= expected.height)))) throw new Error('PHONE_COORDINATES_OUTSIDE_FRAME');
         if (a.type === 'tap_element' || (a.type === 'text' && expected.ui_proof?.focused_editable_id)) {
           const before = await this.context();
@@ -308,7 +329,7 @@ export class PhoneService {
             inputValidation = 'fresh_input_connection';
           }
           if (this.automation && ['tap', 'long_press', 'swipe', 'scroll'].includes(a.type) && 'x' in a) {
-            gesture = a.type === 'swipe' || a.type === 'scroll' ? touchGesture([a.x, a.y], { to: [a.to_x, a.to_y], duration_ms: a.duration_ms })
+            gesture = a.type === 'swipe' || a.type === 'scroll' ? touchGesture([a.x, a.y], { to: [a.to_x, a.to_y], duration_ms: scrollDuration ?? a.duration_ms })
               : touchGesture([a.x, a.y], a.type === 'long_press' ? { duration_ms: a.duration_ms } : {});
             if (a.type === 'scroll' && this.automation.resolveScrollTarget) {
               const scrollContext = { package: current.package!, window: current.window, rotation: current.rotation, width: current.width, height: current.height };
@@ -321,7 +342,7 @@ export class PhoneService {
               if (target) {
                 const elementId = await this.automation.resolveScrollTarget(target.xpath);
                 if (elementId) {
-                  const scroll = nativeScroll(elementId, target.bounds, [a.x, a.y], [a.to_x, a.to_y], a.duration_ms);
+                  const scroll = nativeScroll(elementId, target.bounds, [a.x, a.y], [a.to_x, a.to_y], scrollDuration!);
                   if (scroll) gesture.scroll = scroll;
                 }
               }
@@ -331,7 +352,7 @@ export class PhoneService {
           }
           if (a.type === 'tap') command = ['input', 'tap', String(a.x), String(a.y)];
           else if (a.type === 'long_press') command = ['input', 'swipe', String(a.x), String(a.y), String(a.x), String(a.y), String(a.duration_ms)];
-          else if (a.type === 'swipe' || a.type === 'scroll') command = ['input', 'swipe', String(a.x), String(a.y), String(a.to_x), String(a.to_y), String(a.duration_ms)];
+          else if (a.type === 'swipe' || a.type === 'scroll') command = ['input', 'swipe', String(a.x), String(a.y), String(a.to_x), String(a.to_y), String(scrollDuration ?? a.duration_ms)];
           else if (a.type === 'key') command = ['input', 'keyevent', `KEYCODE_${a.key}`];
           if (gesture) command = undefined;
         }
@@ -382,17 +403,38 @@ export class PhoneService {
         // Navigation may briefly remove focus or change the window during a
         // screenshot. Retry only reads, never the action or its request ID.
         const waitCondition = args.wait_for ? waitFor.parse(args.wait_for) : undefined;
+        const mode = observationMode.parse(args.observation);
         if (!waitCondition) await delay(250);
         let observation: Awaited<ReturnType<PhoneService['capture']>> | undefined;
         let waitResult: { status: string; attempts: number; elapsed_ms: number } | undefined;
+        let fallbackReason: string | undefined;
         let observationAttempts = 0;
         if (waitCondition) {
-          const waited = await this.waitUntil(waitCondition, false);
-          observation = waited.observation; waitResult = waited.wait; observationAttempts = waited.wait.attempts;
+          const started = performance.now();
+          try {
+            const waited = await this.waitUntil(waitCondition, false);
+            observation = waited.observation; waitResult = waited.wait; observationAttempts = waited.wait.attempts;
+          } catch (e) {
+            if (mode === 'ui') throw e;
+            waitResult = { status: 'unavailable', attempts: 0, elapsed_ms: Math.round(performance.now() - started) };
+          }
+          if (observation) {
+            const reason = mode === 'image' ? 'requested_image' : mode === 'auto'
+              ? (waitResult?.status === 'timeout' ? 'condition_timeout' : imageFallbackReason(observation.semantic!, observation.frame.width, observation.frame.height)) : undefined;
+            if (reason) {
+              fallbackReason = reason;
+              observation = undefined;
+            } else observation.reason = mode === 'auto' ? 'ui_sufficient' : 'requested_ui';
+          }
         }
         for (let attempt = 0; !observation && attempt < 3; attempt++) {
           observationAttempts++;
-          try { observation = await this.capture(false); break; }
+          try {
+            observation = fallbackReason ? await this.capture(false)
+              : await this.capture(mode !== 'image', mode === 'auto' ? 'auto' : mode === 'image');
+            if (fallbackReason) observation.reason = fallbackReason;
+            break;
+          }
           catch (e) {
             if (!(e instanceof Error) || !['PHONE_FRAME_CHANGED_DURING_CAPTURE', 'PHONE_DISPLAY_CONTEXT_UNKNOWN'].includes(e.message) || attempt === 2) throw e;
             await delay(250 * (attempt + 1));
@@ -403,7 +445,7 @@ export class PhoneService {
           input_validation: inputValidation,
           touch: gesture ? gesture.scroll
             ? { backend: 'appium_uiautomator2', method: 'scrollGesture', direction: gesture.scroll.direction,
-                percent: gesture.scroll.percent, speed: gesture.scroll.speed, can_scroll_more: touchResult?.can_scroll_more }
+                percent: gesture.scroll.percent, speed: gesture.scroll.speed, planned_duration_ms: gesture.duration_ms, can_scroll_more: touchResult?.can_scroll_more }
             : { backend: 'appium_uiautomator2', method: 'pointer_actions', duration_ms: gesture.duration_ms, points: gesture.points } : undefined,
           wait: waitResult,
           observation_attempts: observationAttempts,

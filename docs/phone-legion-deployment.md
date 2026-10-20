@@ -32,6 +32,8 @@ ADB 位于真实用户配置目录下的 `CloudPhoneServer\scrcpy-win64-v5.0.1\a
 
 版本 `1.7.0-local.8` 的普通滚动会从新读取的控件树中选择包含手势起终点的最内层滚动容器，并调用 Appium `mobile: scrollGesture`；页面未提供唯一容器时沿用坐标触摸手势。`touch.method` 标明执行方式，专用滚动接口还返回驱动报告的 `can_scroll_more`，实际移动情况通过动作后的画面确认。点击和拖动的既有实现保持不变，接口参数无需调整。
 
+版本 `1.7.0-local.9` 为普通滚动加入时长最多 ±8%、专用滚动距离最多 ±3% 的变化，中心值沿用原参数，不增加停顿；坐标回退保留起终点，拖动 `swipe` 保留原指定时长。动作后的 `observation` 默认 `auto`：控件和文字足够时仅返回界面数据，内容稀少、读取失败或存在较大的无描述图像区域时自动截图，结果中的 `observation.mode/reason` 说明本次选择。可指定 `ui` 或 `image`；条件等待超时在自动模式下返回截图。自动判断依据控件树，调用方需要辨认商品图片或发现下一目标缺少描述时，也可以调用 `phone_observe({ui:false,image:true})` 补充画面。
+
 由实际运行账户在 Lenovo checkout 内执行：
 
 ```powershell
@@ -47,7 +49,7 @@ node scripts/legion-phone-check.mjs E:\LocalWorkbenchPrivate\workspaces.json --u
 
 优先调用 `phone_observe({ui:true,image:false})`。从返回的 `ui.elements` 按 `text`、`resource_id` 或 `description` 选择唯一目标，再用最新 `frame_id`、租约及独立请求号调用 `phone_input`，动作为 `{type:"tap_element",element_id:"观察返回的ID"}`。执行前会重新读取 UI，核对窗口、目标身份/位置、可用性和页面锚点；不依赖全屏像素相同。控件不存在或有歧义时不要猜 ID，改为重新观察；自绘页面没有可用控件时，使用带图片的观察和坐标回退。只有图像观察产生的 frame 才能授权坐标动作。
 
-动作后返回新的观察供 Agent 核对结果。页面切换造成焦点暂时消失时只重试读取；`completed` 表示动作已发送并取得后续观察，业务结果由实际页面确认。使用 `wait_for` 时返回控件观察与条件状态，未使用时返回图像。
+动作后返回新的观察供 Agent 核对结果。页面切换造成焦点暂时消失时只重试读取；`completed` 表示动作已发送并取得后续观察，业务结果由实际页面确认。`1.7.0-local.9` 起，动作后的图像按上述 `observation` 规则返回，使用 `wait_for` 时同时返回条件状态。
 
 ### Appium 手势与条件等待（1.7.0-local.6）
 

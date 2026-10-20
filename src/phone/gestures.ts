@@ -3,13 +3,18 @@ export type NativeScroll = { elementId: string; direction: 'up' | 'down' | 'left
 export type TouchPlan = { actions: { type: 'pointer'; id: string; parameters: { pointerType: 'touch' }; actions: TouchAction[] }[]; duration_ms: number; points: [number, number][]; scroll?: NativeScroll };
 export type TouchBounds = [number, number, number, number];
 
-export function nativeScroll(elementId: string, bounds: TouchBounds, from: [number, number], to: [number, number], duration: number): NativeScroll | undefined {
+export function varyScrollDuration(duration: number, random = Math.random): number {
+  return Math.max(100, Math.min(2000, Math.round(duration * (1 + (random() + random() - 1) * 0.08))));
+}
+
+export function nativeScroll(elementId: string, bounds: TouchBounds, from: [number, number], to: [number, number], duration: number, random = Math.random): NativeScroll | undefined {
   const dx = to[0] - from[0], dy = to[1] - from[1], horizontal = Math.abs(dx) > Math.abs(dy);
   const distance = Math.abs(horizontal ? dx : dy), span = horizontal ? bounds[2] - bounds[0] : bounds[3] - bounds[1];
   if (!distance || span <= 0) return;
+  const variedDistance = Math.min(span, distance * (1 + (random() + random() - 1) * 0.03));
   // scrollGesture names the content direction, opposite to the finger movement.
   return { elementId, direction: horizontal ? (dx < 0 ? 'right' : 'left') : (dy < 0 ? 'down' : 'up'),
-    percent: Math.min(1, distance / span), speed: Math.max(1, Math.round(distance * 1000 / duration)) };
+    percent: variedDistance / span, speed: Math.max(1, Math.round(variedDistance * 1000 / duration)) };
 }
 
 export function touchPoint(bounds: TouchBounds, random = Math.random): [number, number] {

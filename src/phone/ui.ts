@@ -3,7 +3,7 @@ import { digest } from './store.js';
 type Bounds = [number, number, number, number];
 type Node = { tag: string; attrs: Record<string, string>; parent: Node | undefined; children: Node[] };
 export type UiElement = { element_id: string; text: string; resource_id: string; description: string; class: string; bounds: Bounds; click_bounds: Bounds; focused?: boolean };
-export type UiNode = { text: string; resource_id: string; description: string; class: string; bounds: Bounds; enabled: boolean };
+export type UiNode = { text: string; resource_id: string; description: string; class: string; bounds: Bounds; enabled: boolean; checked?: boolean; selected?: boolean; focused?: boolean };
 export type UiSelector = { text?: string | undefined; resource_id?: string | undefined; description?: string | undefined; class?: string | undefined };
 export type UiSnapshot = { elements: UiElement[]; anchors: string[]; nodes?: UiNode[]; rawNodes?: Node[] };
 export type UiScrollTarget = { xpath: string; bounds: Bounds };
@@ -98,7 +98,10 @@ export function uiSnapshot(xml: string, packageName: string, width: number, heig
     const b = bounds(node, width, height);
     if (node.attrs.package !== packageName || !visible(node) || !b) continue;
     visibleNodes.push({ text: node.attrs.text ?? '', resource_id: node.attrs['resource-id'] ?? '',
-      description: node.attrs['content-desc'] ?? '', class: node.attrs.class ?? '', bounds: b, enabled: usable(node) });
+      description: node.attrs['content-desc'] ?? '', class: node.attrs.class ?? '', bounds: b, enabled: usable(node),
+      ...(node.attrs.checked !== undefined ? {checked:node.attrs.checked === 'true'} : {}),
+      ...(node.attrs.selected !== undefined ? {selected:node.attrs.selected === 'true'} : {}),
+      ...(node.attrs.focused !== undefined ? {focused:node.attrs.focused === 'true'} : {}) });
   }
   return { elements, anchors: [...new Set(anchors)], nodes: visibleNodes, rawNodes: nodes };
 }

@@ -4,7 +4,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { scrollTarget, uiSnapshot } from '../../src/phone/ui.js';
-import { nativeScroll, touchGesture } from '../../src/phone/gestures.js';
+import { nativeScroll, touchGesture, varyScrollDuration } from '../../src/phone/gestures.js';
 import { AppiumAutomation } from '../../src/phone/automation.js';
 import type { PhoneConfig } from '../../src/phone/config.js';
 
@@ -27,12 +27,29 @@ test('scroll chooses the inner list rather than its overlapping outer scroller',
 
 test('native scroll converts finger direction, distance and duration for each axis', () => {
   const bounds: [number, number, number, number] = [0,0,1000,2000];
-  assert.deepEqual(nativeScroll('item', bounds, [800,1800], [800,800], 500),
+  assert.deepEqual(nativeScroll('item', bounds, [800,1800], [800,800], 500, () => 0.5),
     {elementId:'item',direction:'down',percent:0.5,speed:2000});
   assert.equal(nativeScroll('item', bounds, [800,800], [800,1800], 500)!.direction, 'up');
   assert.equal(nativeScroll('item', bounds, [800,800], [200,800], 500)!.direction, 'right');
   assert.equal(nativeScroll('item', bounds, [200,800], [800,800], 500)!.direction, 'left');
   assert.equal(nativeScroll('item', bounds, [800,800], [800,800], 500), undefined);
+});
+
+test('scroll variation stays bounded, preserves direction and adds no average delay', () => {
+  let sum = 0;
+  for (let i=0;i<=100;i++) {
+    const random=()=>i/100, duration=varyScrollDuration(450,random);
+    sum+=duration;
+    assert.ok(duration>=414 && duration<=486);
+    const plan=nativeScroll('item',[0,0,1000,2000],[800,1800],[800,800],duration,random)!;
+    assert.equal(plan.direction,'down');
+    assert.ok(plan.percent>=0.485 && plan.percent<=0.515);
+    assert.ok(Math.abs(plan.percent*2000/plan.speed*1000-duration)<1);
+  }
+  assert.equal(sum/101,450);
+  assert.equal(varyScrollDuration(100,()=>0),100);
+  assert.equal(varyScrollDuration(2000,()=>1),2000);
+  assert.equal(nativeScroll('item',[0,0,1000,2000],[800,1999],[800,0],450,()=>1)!.percent,1);
 });
 
 test('native scroll resolves a unique target, returns end-of-list and never replays failed dispatch', async t => {
