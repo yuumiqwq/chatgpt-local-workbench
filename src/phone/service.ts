@@ -9,8 +9,7 @@ import { PhoneStore, digest, token } from './store.js';
 import { VERSION } from '../version.js';
 import { HostError } from '../host/host-policy.js';
 import { ScrcpyPanel, physicalPanelState, type PhonePanel } from './panel.js';
-import { visualSignature, stableTapTarget, stableSwipeTarget, type VisualSignature } from './visual.js';
-import { uiSnapshot, uiProof, resolveUiTarget, matchesUi, validateTouchPoint, scrollTarget, scrollObservation, type UiProof, type UiSnapshot } from './ui.js';
+import { uiSnapshot, matchesUi, validateTouchPoint, scrollTarget, scrollObservation, type UiSnapshot } from './ui.js';
 import { setTimeout as delay } from 'node:timers/promises';
 import { AppiumAutomation, type PhoneAutomation } from './automation.js';
 import { touchGesture, touchPoint, nativeScroll, varyScrollDuration, scrollPoints, type TouchPlan, type TouchBounds } from './gestures.js';
@@ -48,7 +47,7 @@ export const phoneSchemas = {
 export type PhoneTool = keyof typeof phoneSchemas;
 type Lease = { hash: string; expires: number; epoch: string };
 const leaseSchema = z.object({ hash: z.string().regex(/^[a-f0-9]{64}$/), expires: z.number().finite().nonnegative(), epoch: z.string().min(1) }).strict();
-type Frame = { frame_id: string; timestamp: string; at: number; package: string | null; window: string; rotation: number; width: number; height: number; hash?: string; visual?: VisualSignature; ui_proof?: UiProof; input_focus?: string };
+type Frame = { frame_id: string; timestamp: string; at: number; package: string | null; window: string; rotation: number; width: number; height: number; targets?: { id: string; point: [number, number] }[]; input_focus?: string };
 type Request = { fingerprint: string; lease_hash: string; state: 'pending' | 'completed'; result?: unknown };
 const json = (value: unknown): CallToolResult => ({ content: [{ type: 'text', text: JSON.stringify(value) }] });
 
@@ -170,11 +169,18 @@ export class PhoneService {
         } else if (image === 'auto') reason = imageFallbackReason(fresh.snapshot, before.width, before.height);
       }
     }
+    // Store only opaque IDs and coordinates from the observation. Input consumes
+    // these targets directly; page text, subtree and pixel equality are not gates.
+    const targets = fresh?.snapshot.elements.map(element => {
+      const center: [number, number] = [Math.floor((element.bounds[0]+element.bounds[2])/2), Math.floor((element.bounds[1]+element.bounds[3])/2)];
+      const chosen = this.automation ? touchPoint(element.bounds) : center;
+      return {id:element.element_id,point:validateTouchPoint(fresh!.snapshot,element.element_id,chosen) ? chosen : center};
+    });
     if (image === false || (image === 'auto' && !reason)) {
       if (!fresh) throw new Error('PHONE_UI_DUMP_FAILED');
       const capturedAt = this.now(), focus = await this.inputFocus(before.package), after = await this.context();
       if (JSON.stringify(before) !== JSON.stringify(after)) throw new Error('PHONE_FRAME_CHANGED_DURING_CAPTURE');
-      const frame: Frame = { ...after, frame_id: token(), timestamp: new Date(capturedAt).toISOString(), at: capturedAt, ui_proof: uiProof(fresh.snapshot), ...(focus ? {input_focus:focus} : {}) };
+      const frame: Frame = { ...after, frame_id: token(), timestamp: new Date(capturedAt).toISOString(), at: capturedAt, ...(targets ? {targets} : {}), ...(focus ? {input_focus:focus} : {}) };
       await this.store.save('frame.json', frame);
       return { frame, ui: uiResult, semantic: fresh.snapshot, rendered: null, reason: image === 'auto' ? 'ui_sufficient' : 'requested_ui' };
     }
@@ -188,12 +194,9 @@ export class PhoneService {
     const focus = await this.inputFocus(before.package), after = await this.context();
     if (JSON.stringify(before) !== JSON.stringify(after)) throw new Error('PHONE_FRAME_CHANGED_DURING_CAPTURE');
     // A full serialized response stays comfortably below the tunnel's 10 MiB limit.
-    // Coordinate validation and hashes always use the original physical raster.
     const { default: sharp } = await import('sharp');
-    const rgb = await sharp(png, { limitInputPixels: 40_000_000 }).removeAlpha().toColourspace('srgb')
-      .timeout({ seconds: 3 }).raw().toBuffer();
     const frame: Frame = { ...after, frame_id: token(), timestamp: new Date(capturedAt).toISOString(), at: capturedAt, width, height,
-      visual: visualSignature(rgb, width, height), ...(semantic ? { ui_proof: uiProof(semantic) } : {}), ...(focus ? {input_focus:focus} : {}) };
+      ...(targets ? {targets} : {}), ...(focus ? {input_focus:focus} : {}) };
     const rendered = await sharp(png, { limitInputPixels: 40_000_000 }).resize({ width: 1280, height: 1280, fit: 'inside', withoutEnlargement: true })
       .timeout({ seconds: 3 }).png({ compressionLevel: 9 }).toBuffer({ resolveWithObject: true });
     if (rendered.data.length > 3 * 1024 * 1024 || Buffer.byteLength(JSON.stringify(uiResult)) > 512 * 1024) throw new Error('PHONE_OBSERVATION_TOO_LARGE');
@@ -228,11 +231,11 @@ export class PhoneService {
     return { observation: last, wait: { status: 'timeout', attempts, elapsed_ms: Math.round(performance.now() - start) } };
   }
   private observation(o: Awaited<ReturnType<PhoneService['capture']>>, extra: unknown = {}): CallToolResult {
-    const { hash: _hash, at: _at, visual: _visual, window: _window, ui_proof: _proof, input_focus: _focus, ...frame } = o.frame;
+    const { at: _at, window: _window, targets: _targets, input_focus: _focus, ...frame } = o.frame;
     return { content: [{ type: 'text', text: JSON.stringify({ ...frame, ui: o.ui, flag_secure: 'unknown', capture_atomic: false,
       rendered: o.rendered, coordinate_space: 'original_physical_pixels',
       observation: { mode: o.png ? 'image' : 'ui', reason: o.reason },
-      input_validation: 'No whole-screen pixel comparison or changed-area threshold. tap_element revalidates the target and page anchors. Coordinate tap/long_press protect the target neighborhood; swipe protects its gesture region. Use scroll for ordinary navigation, with context checks only. Text revalidates the focused EditText or active IME connection. Keys use context checks. All paths check fresh window/package/dimensions/rotation.',
+      input_validation: 'No pixel, target-region, gesture-region, subtree or page-anchor comparison. tap_element uses coordinates from the referenced observation. Inputs check frame age, window/package/dimensions/rotation and coordinate bounds; text confirms the active IME connection. Lease, pause and request deduplication remain enforced.',
       consistency: `${o.png ? 'fresh PNG' : 'fresh UI hierarchy'}; focused window, package, physical dimensions and rotation checked before and after; UI XML has a short collection race; secure regions remain unknown`, result: extra }) },
     ...(o.png ? [{ type: 'image' as const, mimeType: 'image/png', data: o.png.toString('base64') }] : [])] };
   }
@@ -252,7 +255,7 @@ export class PhoneService {
     const size = state === 'device' ? await probe(['wm', 'size']) : null;
     const surface = state === 'device' && this.panel ? await probe(['dumpsys', 'SurfaceFlinger']) : null;
     const physicalSize = size ? /Physical size: (\d+)x(\d+)/.exec(size) : null;
-    return { hostname: hostname(), service_version: VERSION, phone_protocol_version: '1', input_validation_version: 'action-target-v3', capabilities: Object.keys(phoneSchemas),
+    return { hostname: hostname(), service_version: VERSION, phone_protocol_version: '1', input_validation_version: 'context-only-v4', capabilities: Object.keys(phoneSchemas),
       semantic_input: { observe: { ui: true, image: false }, action: 'tap_element', target: 'element_id from fresh ui.elements; identify by text/resource_id/description', post_action_observation_retries: 2,
         touch_backend: this.automation ? 'appium_uiautomator2' : 'adb', condition_wait: true,
         scroll_backend: this.automation?.resolveScrollTarget ? 'innermost_scrollable_then_touch' : 'touch',
@@ -307,7 +310,7 @@ export class PhoneService {
       let scrollHorizontal = false;
       let scrollAvoidedOverlay = false;
       let turnPanelOff = false;
-      let inputValidation: 'stable_target_region' | 'stable_gesture_region' | 'fresh_ui_target' | 'fresh_ui_text_target' | 'fresh_input_connection' | 'fresh_context' | undefined;
+      let inputValidation: 'observed_ui_target' | 'fresh_input_connection' | 'fresh_context' | undefined;
       if (name === 'phone_input') {
         const input = phoneSchemas.phone_input.parse(args);
         const expected = await this.store.read<Frame>('frame.json');
@@ -315,40 +318,21 @@ export class PhoneService {
         const a = input.action;
         const scrollDuration = a.type === 'scroll' ? varyScrollDuration(a.duration_ms) : undefined;
         if ('x' in a && (a.x >= expected.width || a.y >= expected.height || ('to_x' in a && (a.to_x >= expected.width || a.to_y >= expected.height)))) throw new Error('PHONE_COORDINATES_OUTSIDE_FRAME');
-        if (a.type === 'tap_element' || (a.type === 'text' && expected.ui_proof?.focused_editable_id)) {
+        if (a.type === 'tap_element') {
           const before = await this.context();
           if (['window', 'package', 'rotation', 'width', 'height'].some(k => before[k as keyof typeof before] !== expected[k as keyof Frame])) throw new Error('PHONE_FRAME_CHANGED');
-          const fresh = await this.readUi(before), after = await this.context();
-          if (JSON.stringify(before) !== JSON.stringify(after)) throw new Error('PHONE_FRAME_CHANGED_DURING_CAPTURE');
           if (this.now() - expected.at > this.config.frame_seconds * 1000) throw new Error('PHONE_FRAME_EXPIRED');
-          const elementId = a.type === 'tap_element' ? a.element_id : expected.ui_proof!.focused_editable_id!;
-          if (a.type === 'text' && uiProof(fresh.snapshot).focused_editable_id !== elementId) throw new Error('PHONE_UI_TEXT_FOCUS_CHANGED');
-          const target = resolveUiTarget(expected.ui_proof, fresh.snapshot, elementId);
-          inputValidation = a.type === 'text' ? 'fresh_ui_text_target' : 'fresh_ui_target';
-          if (a.type !== 'text') {
-            if (this.automation) {
-              const bounds = fresh.snapshot.elements.find(element => element.element_id === elementId)!.bounds;
-              const chosen = touchPoint(bounds);
-              gesture = touchGesture(validateTouchPoint(fresh.snapshot, elementId, chosen) ? chosen : [target.x, target.y]);
-            } else command = ['input', 'tap', String(target.x), String(target.y)];
-          }
+          const targets = expected.targets?.filter(target => target.id === a.element_id);
+          if (!targets || targets.length !== 1) throw new Error('PHONE_UI_TARGET_UNKNOWN_OR_AMBIGUOUS');
+          const target = targets[0]!.point;
+          inputValidation = 'observed_ui_target';
+          if (this.automation) gesture = touchGesture(target);
+          else command = ['input', 'tap', String(target[0]), String(target[1])];
         } else {
-          const needsImage = a.type === 'tap' || a.type === 'long_press' || a.type === 'swipe';
-          if (needsImage && !expected.visual) throw new Error('PHONE_IMAGE_OBSERVATION_REQUIRED');
-          const current = needsImage ? (await this.capture(false)).frame : await this.context();
+          const current = await this.context();
           if (this.now() - expected.at > this.config.frame_seconds * 1000) throw new Error('PHONE_FRAME_EXPIRED');
           if (current.window !== expected.window || current.package !== expected.package || current.rotation !== expected.rotation || current.width !== expected.width || current.height !== expected.height) throw new Error('PHONE_FRAME_CHANGED');
           inputValidation = 'fresh_context';
-          if (needsImage) {
-            const visual = (current as Frame).visual;
-            if (!expected.visual || !visual) throw new Error('PHONE_FRAME_CHANGED');
-            const stable = a.type === 'swipe'
-              ? stableSwipeTarget(expected.visual, visual, expected.width, expected.height, a.x, a.y, a.to_x, a.to_y)
-              : (a.type === 'tap' || a.type === 'long_press') &&
-                stableTapTarget(expected.visual, visual, expected.width, expected.height, a.x, a.y);
-            if (!stable) throw new Error('PHONE_FRAME_CHANGED');
-            inputValidation = a.type === 'swipe' ? 'stable_gesture_region' : 'stable_target_region';
-          }
           if (a.type === 'text') {
             if (!expected.input_focus || expected.input_focus !== await this.inputFocus(current.package!)) throw new Error('PHONE_UI_TEXT_FOCUS_CHANGED');
             if (JSON.stringify(current) !== JSON.stringify(await this.context())) throw new Error('PHONE_FRAME_CHANGED_DURING_CAPTURE');

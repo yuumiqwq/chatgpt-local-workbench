@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Remove all phone input pixel/region comparisons and UI subtree/page-anchor comparisons. Coordinate actions no longer capture a pre-action screenshot; semantic clicks use the referenced observation’s coordinates. Text checks the active input connection. Preserve device context, coordinate bounds, short leases, pause and durable request deduplication.
+
 - Prepare the installed Workbench IME when acquiring phone control with local text input enabled. Report readiness without blocking non-text operations if preparation fails, and reselect the IME on the next acquisition after a manual keyboard change.
 - Avoid foreground clickable overlays when scrolling Android lists by moving the touch path into an exposed part of the container. Return `PHONE_SCROLL_AREA_OCCLUDED` before dispatch if no usable area remains, and report observed content movement separately from the driver's end-of-list boolean.
 - Add bounded variation to ordinary Android scroll duration and native scroll distance without additional pauses. Default post-action observations to accessible controls/text, with automatic PNG fallback for sparse, unavailable or undescribed visual content; callers can explicitly select UI or image responses.
