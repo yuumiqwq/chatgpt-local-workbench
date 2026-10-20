@@ -736,3 +736,30 @@ test('adding the default observation mode preserves durable receipts written by 
   assert.equal(data(await f.phone.call('phone_input',args)).replayed,true);
   assert.equal(f.adb.writes.length,0);
 });
+
+test('scroll avoids a floating banner once and reports actual displacement; a full cover never dispatches',async t=>{
+  const f=await fixture(t),lease_id=await f.acquire();
+  let offset=0,covered=false;
+  const xml=()=>`<hierarchy><node package="com.example.app" enabled="true" bounds="[0,0][1080,2400]">
+    <node package="com.example.app" enabled="true" scrollable="true" drawing-order="1" bounds="[0,500][1080,2200]">
+    ${[1,2].map(i=>`<node package="com.example.app" enabled="true" class="TextView" text="商品 ${i}" bounds="[100,${800+i*150+offset}][500,${900+i*150+offset}]"/>`).join('')}
+    </node><node package="com.example.app" enabled="true" clickable="true" drawing-order="2" bounds="${covered?'[0,0][1080,2400]':'[0,1800][1080,2200]'}"/></node></hierarchy>`;
+  const gestures:TouchPlan[]=[];
+  const automation:PhoneAutomation={ready:async()=>{},source:async()=>xml(),
+    resolveScrollTarget:async()=>{throw Error('covered native bounds must not be used');},
+    perform:async plan=>{gestures.push(plan);offset=-300;}};
+  const phone=new PhoneService(f.config,f.adb,Date.now,undefined,automation);
+  let frame=data(await phone.call('phone_observe',{ui:true,image:false}));
+  const args={lease_id,frame_id:frame.frame_id,request_id:'scroll-overlay-once-001',
+    action:{type:'scroll',x:800,y:2050,to_x:800,to_y:900,duration_ms:450}};
+  const result=data(await phone.call('phone_input',args));
+  assert.equal(result.result.touch.avoided_overlay,true);
+  assert.deepEqual(result.result.scroll_observation,{status:'moved',displacement_px:-300});
+  assert.ok(gestures[0]!.points.every(([x,y])=>x>=12 && x<1068 && y>=512 && y<1788));
+  assert.equal(data(await phone.call('phone_input',args)).replayed,true);
+  assert.equal(gestures.length,1);
+  covered=true;
+  frame=data(await phone.call('phone_observe',{ui:true,image:false}));
+  assert.equal(data(await phone.call('phone_input',{...args,frame_id:frame.frame_id,request_id:'scroll-covered-001'})).error,'PHONE_SCROLL_AREA_OCCLUDED');
+  assert.equal(gestures.length,1);
+});

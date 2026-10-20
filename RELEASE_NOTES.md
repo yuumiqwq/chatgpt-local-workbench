@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Avoid foreground clickable overlays when scrolling Android lists by moving the touch path into an exposed part of the container. Return `PHONE_SCROLL_AREA_OCCLUDED` before dispatch if no usable area remains, and report observed content movement separately from the driver's end-of-list boolean.
 - Add bounded variation to ordinary Android scroll duration and native scroll distance without additional pauses. Default post-action observations to accessible controls/text, with automatic PNG fallback for sparse, unavailable or undescribed visual content; callers can explicitly select UI or image responses.
 - Fix ordinary scrolling in nested Android lists by selecting the innermost enclosing scrollable and dispatching Appium's `mobile: scrollGesture`. Preserve pointer gestures when the UI exposes no unique target, return the driver's `can_scroll_more` feedback, and never retry a dispatched gesture. Coordinate taps and drag gestures retain their existing timing and path behavior.
 - Poll waiting tasks every 500 ms instead of 100 ms to reduce repeated registry reads, while respecting the remaining timeout and cancellation signal.

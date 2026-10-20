@@ -6,7 +6,7 @@ export type UiElement = { element_id: string; text: string; resource_id: string;
 export type UiNode = { text: string; resource_id: string; description: string; class: string; bounds: Bounds; enabled: boolean; checked?: boolean; selected?: boolean; focused?: boolean };
 export type UiSelector = { text?: string | undefined; resource_id?: string | undefined; description?: string | undefined; class?: string | undefined };
 export type UiSnapshot = { elements: UiElement[]; anchors: string[]; nodes?: UiNode[]; rawNodes?: Node[] };
-export type UiScrollTarget = { xpath: string; bounds: Bounds };
+export type UiScrollTarget = { xpath: string; bounds: Bounds; gesture_bounds?: Bounds | null };
 export type UiProof = { element_ids: string[]; anchors: string[]; focused_editable_id?: string };
 
 // Only the bounded, entity-escaped node/hierarchy subset produced by Android's
@@ -126,7 +126,69 @@ export function scrollTarget(snapshot: UiSnapshot, packageName: string, width: n
     const siblings = (node.parent?.children ?? nodes.filter(n => !n.parent)).filter(n => n.tag === node.tag);
     return `${node.tag}[${siblings.indexOf(node) + 1}]`;
   });
-  return { xpath: `/hierarchy/${path.join('/')}`, bounds: bounds(target, width, height)! };
+  const targetBounds = bounds(target, width, height)!;
+  const covers = nodes.filter(other => {
+    if (other.attrs.package !== packageName || other.attrs.clickable !== 'true' || !usable(other)) return false;
+    const a = parents(target), b = parents(other);
+    if (a.includes(other) || b.includes(target)) return false;
+    let i = 0;
+    while (i < Math.min(a.length, b.length) && a[i] === b[i]) i++;
+    const x = a[i], y = b[i];
+    if (!x || !y) return false;
+    const order = (n: Node) => Number(n.attrs['drawing-order'] ?? (n.parent?.children.indexOf(n) ?? nodes.indexOf(n)));
+    return order(y) > order(x);
+  }).map(n => bounds(n, width, height)).filter((b): b is Bounds => !!b &&
+    b[0] < targetBounds[2] && b[2] > targetBounds[0] && b[1] < targetBounds[3] && b[3] > targetBounds[1]);
+  if (!covers.length) return { xpath: `/hierarchy/${path.join('/')}`, bounds: targetBounds };
+  let free: Bounds[] = [targetBounds];
+  const area = (b: Bounds) => (b[2]-b[0])*(b[3]-b[1]);
+  for (const cover of covers) {
+    free = free.flatMap(b => {
+      const l=Math.max(b[0],cover[0]), t=Math.max(b[1],cover[1]), r=Math.min(b[2],cover[2]), d=Math.min(b[3],cover[3]);
+      if(l>=r || t>=d) return [b];
+      // Keep maximal exposed rectangles: a narrow side badge should not shorten
+      // a vertical gesture that fits beside it.
+      return [[b[0],b[1],b[2],t],[b[0],d,b[2],b[3]],[b[0],b[1],l,b[3]],[r,b[1],b[2],b[3]]] as Bounds[];
+    }).filter(b => b[2]-b[0]>=48 && b[3]-b[1]>=48).sort((a,b)=>area(b)-area(a)).slice(0,32);
+  }
+  const horizontal = Math.abs(to[0]-from[0]) > Math.abs(to[1]-from[1]);
+  const usableArea = free.find(b => (horizontal ? b[2]-b[0] : b[3]-b[1]) >= 120);
+  return { xpath: `/hierarchy/${path.join('/')}`, bounds: targetBounds, gesture_bounds: usableArea ?? null };
+}
+
+export function scrollObservation(before: UiSnapshot | undefined, after: UiSnapshot | undefined, region: Bounds | undefined,
+  horizontal: boolean): { status: 'moved' | 'no_movement_observed' | 'content_changed' | 'unavailable'; displacement_px?: number } {
+  if (!before || !after || !region) return { status: 'unavailable' };
+  const collect = (ui: UiSnapshot, restrict: boolean) => {
+    const result = new Map<string, UiNode[]>();
+    for (const node of ui.nodes ?? []) {
+      if (!node.text.trim() && !node.description.trim()) continue;
+      const [l,t,r,b] = node.bounds, [x,y] = [(l+r)/2,(t+b)/2];
+      if (restrict && !contains(region,x,y)) continue;
+      const key=JSON.stringify([node.class,node.resource_id,node.text,node.description]);
+      result.set(key,[...(result.get(key) ?? []),node]);
+    }
+    return result;
+  };
+  // Collapsing headers can move list items outside the container's old bounds.
+  // Match those same labels across the new viewport before checking displacement.
+  const a=collect(before,true), b=collect(after,false), offsets:number[]=[];
+  for(const [key,nodes] of a){
+    const next=b.get(key);
+    if(nodes.length!==1 || next?.length!==1) continue;
+    const old=nodes[0]!.bounds, fresh=next[0]!.bounds, axis=horizontal?0:1;
+    offsets.push((fresh[axis]!+fresh[axis+2]!-old[axis]!-old[axis+2]!)/2);
+  }
+  const moving=offsets.filter(d=>Math.abs(d)>=8);
+  // A single changing advertisement is insufficient evidence of list movement.
+  for(const offset of moving){
+    const group=moving.filter(d=>Math.abs(d-offset)<=6);
+    if(group.length>=2) return {status:'moved',displacement_px:Math.round(group.reduce((s,d)=>s+d,0)/group.length)};
+  }
+  const afterRegion=collect(after,true);
+  if(a.size>=2 && a.size===afterRegion.size && [...a.keys()].every(k=>afterRegion.has(k)) && offsets.length>=2 && offsets.every(d=>Math.abs(d)<8))
+    return {status:'no_movement_observed'};
+  return {status:a.size || b.size?'content_changed':'unavailable'};
 }
 export function validateTouchPoint(snapshot: UiSnapshot, elementId: string, point: [number, number]): boolean {
   const element = snapshot.elements.find(item => item.element_id === elementId);

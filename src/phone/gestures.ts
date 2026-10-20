@@ -7,6 +7,17 @@ export function varyScrollDuration(duration: number, random = Math.random): numb
   return Math.max(100, Math.min(2000, Math.round(duration * (1 + (random() + random() - 1) * 0.08))));
 }
 
+export function scrollPoints(bounds: TouchBounds, from: [number, number], to: [number, number]): [[number, number], [number, number]] {
+  const [l,t,r,b]=bounds, padding=12, dx=to[0]-from[0], dy=to[1]-from[1];
+  const scale=Math.min(1,(r-l-padding*2-1)/Math.max(1,Math.abs(dx)),(b-t-padding*2-1)/Math.max(1,Math.abs(dy)));
+  const delta:[number,number]=[Math.round(dx*scale),Math.round(dy*scale)];
+  const start:[number,number]=[
+    Math.round(Math.max(l+padding-Math.min(0,delta[0]),Math.min(r-padding-1-Math.max(0,delta[0]),from[0]))),
+    Math.round(Math.max(t+padding-Math.min(0,delta[1]),Math.min(b-padding-1-Math.max(0,delta[1]),from[1])))
+  ];
+  return [start,[start[0]+delta[0],start[1]+delta[1]]];
+}
+
 export function nativeScroll(elementId: string, bounds: TouchBounds, from: [number, number], to: [number, number], duration: number, random = Math.random): NativeScroll | undefined {
   const dx = to[0] - from[0], dy = to[1] - from[1], horizontal = Math.abs(dx) > Math.abs(dy);
   const distance = Math.abs(horizontal ? dx : dy), span = horizontal ? bounds[2] - bounds[0] : bounds[3] - bounds[1];

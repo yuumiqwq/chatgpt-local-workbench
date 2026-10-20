@@ -10,10 +10,10 @@ import { VERSION } from '../version.js';
 import { HostError } from '../host/host-policy.js';
 import { ScrcpyPanel, physicalPanelState, type PhonePanel } from './panel.js';
 import { visualSignature, stableTapTarget, stableSwipeTarget, type VisualSignature } from './visual.js';
-import { uiSnapshot, uiProof, resolveUiTarget, matchesUi, validateTouchPoint, scrollTarget, type UiProof, type UiSnapshot } from './ui.js';
+import { uiSnapshot, uiProof, resolveUiTarget, matchesUi, validateTouchPoint, scrollTarget, scrollObservation, type UiProof, type UiSnapshot } from './ui.js';
 import { setTimeout as delay } from 'node:timers/promises';
 import { AppiumAutomation, type PhoneAutomation } from './automation.js';
-import { touchGesture, touchPoint, nativeScroll, varyScrollDuration, type TouchPlan } from './gestures.js';
+import { touchGesture, touchPoint, nativeScroll, varyScrollDuration, scrollPoints, type TouchPlan, type TouchBounds } from './gestures.js';
 import { inputFocusProof } from './focus.js';
 import { imageFallbackReason } from './observation.js';
 
@@ -280,6 +280,10 @@ export class PhoneService {
       };
       let command: string[] | undefined;
       let gesture: TouchPlan | undefined;
+      let scrollBefore: UiSnapshot | undefined;
+      let scrollRegion: TouchBounds | undefined;
+      let scrollHorizontal = false;
+      let scrollAvoidedOverlay = false;
       let turnPanelOff = false;
       let inputValidation: 'stable_target_region' | 'stable_gesture_region' | 'fresh_ui_target' | 'fresh_ui_text_target' | 'fresh_input_connection' | 'fresh_context' | undefined;
       if (name === 'phone_input') {
@@ -331,19 +335,30 @@ export class PhoneService {
           if (this.automation && ['tap', 'long_press', 'swipe', 'scroll'].includes(a.type) && 'x' in a) {
             gesture = a.type === 'swipe' || a.type === 'scroll' ? touchGesture([a.x, a.y], { to: [a.to_x, a.to_y], duration_ms: scrollDuration ?? a.duration_ms })
               : touchGesture([a.x, a.y], a.type === 'long_press' ? { duration_ms: a.duration_ms } : {});
-            if (a.type === 'scroll' && this.automation.resolveScrollTarget) {
+            if (a.type === 'scroll') {
               const scrollContext = { package: current.package!, window: current.window, rotation: current.rotation, width: current.width, height: current.height };
               let snapshot: UiSnapshot | undefined;
               try { snapshot = (await this.readUi(scrollContext)).snapshot; }
               catch (e) {
                 if (!(e instanceof Error) || !['PHONE_UI_DUMP_INVALID', 'PHONE_UI_DUMP_FAILED'].includes(e.message)) throw e;
               }
+              scrollBefore = snapshot;
+              scrollRegion = [0,0,current.width,current.height];
+              scrollHorizontal = Math.abs(a.to_x-a.x)>Math.abs(a.to_y-a.y);
               const target = snapshot && scrollTarget(snapshot, current.package!, current.width, current.height, [a.x, a.y], [a.to_x, a.to_y]);
               if (target) {
-                const elementId = await this.automation.resolveScrollTarget(target.xpath);
-                if (elementId) {
-                  const scroll = nativeScroll(elementId, target.bounds, [a.x, a.y], [a.to_x, a.to_y], scrollDuration!);
-                  if (scroll) gesture.scroll = scroll;
+                scrollRegion = target.bounds;
+                if (target.gesture_bounds === null) throw new Error('PHONE_SCROLL_AREA_OCCLUDED');
+                if (target.gesture_bounds) {
+                  const [from,to]=scrollPoints(target.gesture_bounds,[a.x,a.y],[a.to_x,a.to_y]);
+                  gesture=touchGesture(from,{to,duration_ms:scrollDuration!});
+                  scrollAvoidedOverlay=true;
+                } else if (this.automation.resolveScrollTarget) {
+                  const elementId = await this.automation.resolveScrollTarget(target.xpath);
+                  if (elementId) {
+                    const scroll = nativeScroll(elementId, target.bounds, [a.x, a.y], [a.to_x, a.to_y], scrollDuration!);
+                    if (scroll) gesture.scroll = scroll;
+                  }
                 }
               }
               if (JSON.stringify(await this.context()) !== JSON.stringify(scrollContext)) throw new Error('PHONE_FRAME_CHANGED_DURING_CAPTURE');
@@ -446,7 +461,10 @@ export class PhoneService {
           touch: gesture ? gesture.scroll
             ? { backend: 'appium_uiautomator2', method: 'scrollGesture', direction: gesture.scroll.direction,
                 percent: gesture.scroll.percent, speed: gesture.scroll.speed, planned_duration_ms: gesture.duration_ms, can_scroll_more: touchResult?.can_scroll_more }
-            : { backend: 'appium_uiautomator2', method: 'pointer_actions', duration_ms: gesture.duration_ms, points: gesture.points } : undefined,
+            : { backend: 'appium_uiautomator2', method: 'pointer_actions', duration_ms: gesture.duration_ms, points: gesture.points,
+                ...(scrollAvoidedOverlay ? {avoided_overlay:true} : {}) } : undefined,
+          scroll_observation: name === 'phone_input' && (args.action as {type:string}).type === 'scroll'
+            ? scrollObservation(scrollBefore,observation.semantic,scrollRegion,scrollHorizontal) : undefined,
           wait: waitResult,
           observation_attempts: observationAttempts,
           ui_transition: name === 'phone_input' ? 'fresh post-action observation returned; caller must check the intended result' : undefined,

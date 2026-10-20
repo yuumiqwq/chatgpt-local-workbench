@@ -51,6 +51,8 @@ node scripts/legion-phone-check.mjs E:\LocalWorkbenchPrivate\workspaces.json --u
 
 动作后返回新的观察供 Agent 核对结果。页面切换造成焦点暂时消失时只重试读取；`completed` 表示动作已发送并取得后续观察，业务结果由实际页面确认。`1.7.0-local.9` 起，动作后的图像按上述 `observation` 规则返回，使用 `wait_for` 时同时返回条件状态。
 
+版本 `1.7.0-local.10` 会避开滚动容器上方的可点击浮层，在可用区域内保持手势方向，必要时缩短距离。使用这一路径时，`touch.avoided_overlay` 为 `true`；整个容器被遮挡时返回 `PHONE_SCROLL_AREA_OCCLUDED`，调用方可观察并处理浮层。`result.scroll_observation` 根据已有的操作前后控件数据报告 `moved`、`no_movement_observed`、`content_changed` 或 `unavailable`，确认移动时同时给出位移，不额外读取截图。`can_scroll_more` 仅表示驱动对继续滚动的判断，实际移动仍以观察结果为准。
+
 ### Appium 手势与条件等待（1.7.0-local.6）
 
 Appium 3 与 UiAutomator2 驱动作为本机后台服务运行，只监听 `127.0.0.1`。手机配置增加 `"appium_url":"http://127.0.0.1:4735"` 后，控件读取使用 UiAutomator2，点击和滑动使用 W3C touch actions；ADB 继续负责 USB 连接、截图、应用启动及输入法广播。现有 MCP 隧道与 Phone-Host 保持原用途，不另开公网 Appium 端口。

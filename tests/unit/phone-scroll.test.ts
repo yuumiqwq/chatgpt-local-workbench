@@ -3,8 +3,8 @@ import test from 'node:test';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { scrollTarget, uiSnapshot } from '../../src/phone/ui.js';
-import { nativeScroll, touchGesture, varyScrollDuration } from '../../src/phone/gestures.js';
+import { scrollTarget, scrollObservation, uiSnapshot } from '../../src/phone/ui.js';
+import { nativeScroll, touchGesture, varyScrollDuration, scrollPoints } from '../../src/phone/gestures.js';
 import { AppiumAutomation } from '../../src/phone/automation.js';
 import type { PhoneConfig } from '../../src/phone/config.js';
 
@@ -33,6 +33,32 @@ test('native scroll converts finger direction, distance and duration for each ax
   assert.equal(nativeScroll('item', bounds, [800,800], [200,800], 500)!.direction, 'right');
   assert.equal(nativeScroll('item', bounds, [200,800], [800,800], 500)!.direction, 'left');
   assert.equal(nativeScroll('item', bounds, [800,800], [800,800], 500), undefined);
+});
+
+test('scroll finds exposed space above a foreground banner and ignores background or descendant buttons', () => {
+  const overlay=(b:string,order=2)=>`<node package="app" enabled="true" clickable="true" drawing-order="${order}" bounds="${b}"/>`;
+  const page=(cover:string)=>`<node package="app" enabled="true" bounds="[0,0][1000,2000]">${list(inner,'drawing-order="1"')}${cover}</node>`;
+  assert.deepEqual(target(page(overlay('[0,1700][1000,1950]')))!.gesture_bounds,[0,500,1000,1700]);
+  assert.deepEqual(target(page(overlay('[950,1700][1000,1950]')))!.gesture_bounds,[0,500,950,2000]);
+  assert.equal(target(page(overlay('[0,1700][1000,1950]',0)))!.gesture_bounds,undefined);
+  assert.equal(target(page(overlay('[0,0][1000,2000]')))!.gesture_bounds,null);
+  assert.equal(target(list(inner.replace('/>','>'+overlay('[0,700][1000,900]')+'</androidx.recyclerview.widget.RecyclerView>')))!.gesture_bounds,undefined);
+  for(const [from,to] of [[[800,1800],[800,700]],[[800,700],[800,1800]],[[900,1200],[100,1200]]] as [[number,number],[number,number]][]){
+    const [a,b]=scrollPoints([0,500,1000,1700],from,to);
+    for(const [x,y] of [a,b]) assert.ok(x>=12 && x<988 && y>=512 && y<1688);
+    assert.equal(Math.sign(b[0]-a[0]),Math.sign(to[0]-from[0]));
+    assert.equal(Math.sign(b[1]-a[1]),Math.sign(to[1]-from[1]));
+  }
+});
+
+test('scroll movement is based on multiple matching labels rather than the driver boolean or one advertisement',()=>{
+  const snapshot=(offset=0,ad='广告')=>uiSnapshot(`<hierarchy>${[1,2].map(i=>`<node package="app" class="TextView" text="商品${i}" enabled="true" bounds="[100,${800+i*150+offset}][500,${900+i*150+offset}]"/>`).join('')}
+    <node package="app" class="TextView" text="${ad}" enabled="true" bounds="[0,100][500,200]"/></hierarchy>`,'app',1000,2000);
+  assert.deepEqual(scrollObservation(snapshot(),snapshot(-300),[0,500,1000,2000],false),{status:'moved',displacement_px:-300});
+  assert.deepEqual(scrollObservation(snapshot(),snapshot(-800),[0,500,1000,2000],false),{status:'moved',displacement_px:-800});
+  assert.deepEqual(scrollObservation(snapshot(),snapshot(0,'另一个广告'),[0,500,1000,2000],false),{status:'no_movement_observed'});
+  assert.equal(scrollObservation(undefined,snapshot(),[0,500,1000,2000],false).status,'unavailable');
+  assert.equal(scrollObservation(snapshot(),uiSnapshot('<hierarchy></hierarchy>','app',1000,2000),[0,500,1000,2000],false).status,'content_changed');
 });
 
 test('scroll variation stays bounded, preserves direction and adds no average delay', () => {
