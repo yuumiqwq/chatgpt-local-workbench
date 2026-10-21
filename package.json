@@ -1,6 +1,6 @@
 {
   "name": "engineering-bridge",
-  "version": "1.7.0-local.17",
+  "version": "1.7.0-local.18",
   "description": "Let ChatGPT chat coordinate local agents and computer tasks through MCP.",
   "repository": {
     "type": "git",

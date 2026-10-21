@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Reuse the immediately preceding observation's window context within a phone sequence for up to 250 ms, avoiding a duplicate ADB query between adjacent steps. Explicit settling and later calls read context again; text continues to verify its active input connection. Full diagnostics mark reused context.
 - Add optional per-step settling to phone sequences, with fresh element reads after settling and one final observation. Default to compact responses and record detailed timings automatically in bounded local diagnostic logs; preserve failed-step information and receipt replay semantics.
 - Resolve custom window titles through the exact window owner's package and read display context from the default physical display, preserving the component-title fast path.
 - Add `phone_sequence` for caller-supplied short input sequences, automatic IME readiness waiting, optional final settling, and one final observation. Preserve the shared control lock and durable receipts, report step timings and partial progress, and stop on failure or condition timeout without replaying actions.
