@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Add optional per-step settling to phone sequences, with fresh element reads after settling and one final observation. Default to compact responses and record detailed timings automatically in bounded local diagnostic logs; preserve failed-step information and receipt replay semantics.
 - Resolve custom window titles through the exact window owner's package and read display context from the default physical display, preserving the component-title fast path.
 - Add `phone_sequence` for caller-supplied short input sequences, automatic IME readiness waiting, optional final settling, and one final observation. Preserve the shared control lock and durable receipts, report step timings and partial progress, and stop on failure or condition timeout without replaying actions.
 - Recover a transient IME connection change after an in-sequence tap only while text remains undispatched, within the original readiness budget. Keep the ready path free of additional polling and preserve pending/unknown outcomes without replay.

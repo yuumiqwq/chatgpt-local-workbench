@@ -356,7 +356,9 @@ test('single action, persistent deduplication, request conflict, Unicode no plai
   assert.equal(f.adb.writes.length, 1);
   assert.equal(data(await other.call('phone_input', { ...args, action: { ...args.action, text: 'different' } })).error, 'PHONE_REQUEST_CONFLICT');
   assert.ok(f.adb.writes[0]?.includes(Buffer.from(args.action.text).toString('base64')));
-  for (const file of await readdir(f.dir)) assert.ok(!(await readFile(join(f.dir, file), 'utf8')).includes('第二行'));
+  for (const file of await readdir(f.dir, { recursive: true, withFileTypes: true })) {
+    if (file.isFile()) assert.ok(!(await readFile(join(file.parentPath, file.name), 'utf8')).includes('第二行'));
+  }
 });
 test('uncertain side effect remains outcome_unknown across restart and abandoned lock', async t => {
   const f = await fixture(t), lease_id = await f.acquire(), frame_id = await f.observe();

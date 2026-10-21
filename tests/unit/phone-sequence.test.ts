@@ -72,7 +72,7 @@ async function fixture(t: TestContext) {
   const lease_id = decode(await phone.call('phone_acquire_control', {})).lease_id as string;
   const frame = decode(await phone.call('phone_observe', { ui: true, image: false }));
   adb.calls = [];
-  const args = { lease_id, frame_id: frame.frame_id as string, request_id: 'sequence-request-0001', observation: 'image', steps: [
+  const args = { lease_id, frame_id: frame.frame_id as string, request_id: 'sequence-request-0001', observation: 'image', response_detail: 'full', steps: [
     { action: { type: 'tap', x: 200, y: 150 } },
     { action: { type: 'text', text: '茉莉花茶', mode: 'replace' } },
     { action: { type: 'key', key: 'ENTER' } }
@@ -283,7 +283,7 @@ test('sequence holds the shared operation lock across its steps', async t => {
 
 test('pending sequence receipts report progress across restarts even with an abandoned lock', async t => {
   const f = await fixture(t), parsed = phoneSchemas.phone_sequence.parse(f.args);
-  const fingerprint = createHmac('sha256', f.args.lease_id).update(JSON.stringify({ name: 'phone_sequence', ...parsed, lease_id: undefined })).digest('hex');
+  const fingerprint = createHmac('sha256', f.args.lease_id).update(JSON.stringify({ name: 'phone_sequence', ...parsed, lease_id: undefined, response_detail: undefined })).digest('hex');
   await f.phone.store.save(`request-${digest(f.args.request_id)}.json`, { fingerprint, lease_hash: digest(f.args.lease_id), state: 'pending',
     result: { status: 'running', completed_steps: 1, active_step: 1, steps: [{ index: 0, status: 'completed' }] } });
   await mkdir(join(f.dir, 'operation.lock'));
@@ -337,4 +337,77 @@ test('sequence rejects excess steps, excess waiting and an expired initial frame
   await f.phone.store.save('frame.json', { ...persisted, at: Date.now() - 31000 });
   assert.equal(decode(await f.phone.call('phone_sequence', f.args)).error, 'PHONE_FRAME_EXPIRED');
   assert.equal(f.adb.writes.length, 0);
+});
+
+test('per-step settling delays the next action and returns only the final image', async t => {
+  const f = await fixture(t), times: number[] = [];
+  f.adb.onWrite = async () => { times.push(performance.now()); };
+  const body = decode(await f.phone.call('phone_sequence', { ...f.args, steps: [
+    { action: f.args.steps[0]!.action, settle_after_ms: 120 }, f.args.steps[2]!
+  ] }));
+  assert.equal(body.result.status, 'completed'); assert.ok(times[1]! - times[0]! >= 110);
+  assert.equal(body.result.steps[0].settle_after_ms, 120);
+  assert.equal(f.adb.calls.filter(c => c.includes('screencap')).length, 1);
+});
+
+test('the last step settles before its only final observation', async t => {
+  const f = await fixture(t);
+  const body = decode(await f.phone.call('phone_sequence', { ...f.args, steps: [{ action: f.args.steps[2]!.action, settle_after_ms: 100 }] }));
+  assert.equal(body.result.status, 'completed'); assert.equal(body.result.steps[0].settle_after_ms, 100);
+  assert.ok(body.result.timing.total_ms >= 100);
+  assert.equal(f.adb.calls.filter(c => c.includes('screencap')).length, 1);
+});
+
+test('an element target is refreshed after settling, and pause prevents the next input', async t => {
+  const f = await fixture(t), target = f.frame.ui.elements[0].element_id;
+  let timer: ReturnType<typeof setTimeout>;
+  t.after(() => clearTimeout(timer));
+  f.adb.onWrite = async () => { if (f.adb.writes.length === 1) timer = setTimeout(() => { f.adb.ui = '<hierarchy></hierarchy>'; }, 20); };
+  const body = decode(await f.phone.call('phone_sequence', { ...f.args, steps: [
+    { action: f.args.steps[2]!.action, settle_after_ms: 100 }, { action: { type: 'tap_element', element_id: target } }
+  ] }));
+  assert.equal(body.result.error, 'PHONE_UI_TARGET_UNKNOWN_OR_AMBIGUOUS'); assert.equal(f.adb.writes.length, 1);
+  const g = await fixture(t);
+  g.adb.onWrite = async () => { await writeFile(join(g.dir, 'PAUSED'), ''); };
+  const paused = decode(await g.phone.call('phone_sequence', { ...g.args, steps: [
+    { action: g.args.steps[0]!.action, settle_after_ms: 30 }, g.args.steps[2]!
+  ] }));
+  assert.equal(paused.result.error, 'PHONE_ADMIN_PAUSED'); assert.equal(g.adb.writes.length, 1);
+});
+
+test('step waits count toward the total budget and cannot be negative or unbounded', async t => {
+  const f = await fixture(t);
+  for (const value of [-1, 2001]) assert.equal(phoneSchemas.phone_sequence.safeParse({ ...f.args,
+    steps: [{ action: f.args.steps[0]!.action, settle_after_ms: value }] }).success, false);
+  const body = decode(await f.phone.call('phone_sequence', { ...f.args, steps: [{ action: f.args.steps[0]!.action,
+    settle_after_ms: 2000, wait_for: { selector: { text: 'ready' }, timeout_ms: 29000 } }] }));
+  assert.equal(body.error, 'PHONE_SEQUENCE_WAIT_BUDGET_EXCEEDED'); assert.equal(f.adb.writes.length, 0);
+});
+
+test('summary is the default, full receipts remain retrievable without repeating input, and timing is logged', async t => {
+  const f = await fixture(t), args = { ...f.args, response_detail: undefined };
+  const response = await f.phone.call('phone_sequence', args), body = decode(response);
+  assert.equal(body.result.status, 'completed'); assert.equal(body.result.steps, undefined);
+  assert.equal(body.diagnostic.recorded, true); assert.equal(body.consistency, undefined);
+  assert.equal(response.content.filter(item => item.type === 'image').length, 1);
+  const log = (await readFile(join(f.dir, 'diagnostics', 'calls.jsonl'), 'utf8')).trim().split('\n').map(line => JSON.parse(line));
+  const entry = log.find(item => item.trace_id === body.diagnostic.trace_id);
+  assert.equal(entry.result.steps.length, 3); assert.equal(entry.image_count, 1);
+  assert.ok(entry.duration_ms >= 0); assert.ok(entry.idle_before_ms >= 0);
+  assert.ok(!JSON.stringify(log).includes(f.args.lease_id)); assert.ok(!JSON.stringify(log).includes('茉莉花茶'));
+  const replay = decode(await f.phone.call('phone_sequence', { ...args, response_detail: 'full' }));
+  assert.equal(replay.replayed, true); assert.equal(replay.result.steps.length, 3); assert.equal(f.adb.writes.length, 3);
+  assert.ok(Buffer.byteLength(JSON.stringify(body)) < Buffer.byteLength(JSON.stringify(replay)));
+});
+
+test('summary preserves the failed step and diagnostic failure does not change a completed action', async t => {
+  const f = await fixture(t); f.adb.neverReady = true;
+  const body = decode(await f.phone.call('phone_sequence', { ...f.args, response_detail: undefined, input_ready_timeout_ms: 100 }));
+  assert.equal(body.result.failed_steps[0].index, 1); assert.equal(body.result.failed_steps[0].request_sent, false);
+  assert.equal(body.result.error, 'PHONE_INPUT_READY_TIMEOUT');
+  const g = await fixture(t);
+  await mkdir(join(g.dir, 'diagnostics', 'operation.lock'));
+  const completed = decode(await g.phone.call('phone_sequence', { ...g.args, response_detail: undefined }));
+  assert.equal(completed.result.status, 'completed'); assert.equal(completed.diagnostic.recorded, false);
+  assert.equal(g.adb.writes.length, 3);
 });

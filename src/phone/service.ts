@@ -16,12 +16,14 @@ import { touchGesture, touchPoint, nativeScroll, varyScrollDuration, scrollPoint
 import { inputFocusProof } from './focus.js';
 import { imageFallbackReason } from './observation.js';
 import { parseDisplayContext, parseWindowOwner, type DisplayContext, type PhoneContext } from './context.js';
+import { PhoneDiagnostics, compactResponse, responseBody } from './diagnostics.js';
 
 const id = z.string().regex(/^[A-Za-z0-9_-]{16,128}$/);
 const pkg = z.string().regex(/^[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)+$/).max(200);
 const point = z.number().int().min(0).max(16384);
 const auth = { lease_id: id, request_id: id };
 const observationMode = z.enum(['auto', 'ui', 'image', 'context']).default('auto');
+const responseOptions = { response_detail: z.enum(['summary', 'full']).optional() };
 const selector = z.object({ text: z.string().max(500).optional(), resource_id: z.string().max(500).optional(),
   description: z.string().max(500).optional(), class: z.string().max(200).optional() }).strict().refine(value => Object.keys(value).length > 0);
 const waitFor = z.object({ selector, state: z.enum(['visible', 'enabled', 'gone']).default('visible'),
@@ -39,17 +41,17 @@ export const phoneSchemas = {
   server_status: z.object({}).strict(),
   phone_acquire_control: z.object({}).strict(),
   phone_release_control: z.object({ lease_id: id }).strict(),
-  phone_observe: z.object({ ui: z.boolean().default(false), image: z.boolean().default(true), wait_for: waitFor.optional() }).strict(),
+  phone_observe: z.object({ ...responseOptions, ui: z.boolean().default(false), image: z.boolean().default(true), wait_for: waitFor.optional() }).strict(),
   phone_list_apps: z.object({ search: z.string().max(100).default(''), offset: z.number().int().min(0).max(10000).default(0), limit: z.number().int().min(1).max(100).default(50), refresh: z.boolean().default(false) }).strict(),
-  phone_open_app: z.object({ ...auth, package: pkg, wait_for: waitFor.optional(), observation: observationMode }).strict(),
-  phone_input: z.object({ ...auth, frame_id: id, wait_for: waitFor.optional(), observation: observationMode, action: phoneAction }).strict(),
-  phone_sequence: z.object({ ...auth, frame_id: id,
-    steps: z.array(z.object({ action: phoneAction, wait_for: waitFor.optional() }).strict()).min(1).max(8)
+  phone_open_app: z.object({ ...auth, ...responseOptions, package: pkg, wait_for: waitFor.optional(), observation: observationMode }).strict(),
+  phone_input: z.object({ ...auth, ...responseOptions, frame_id: id, wait_for: waitFor.optional(), observation: observationMode, action: phoneAction }).strict(),
+  phone_sequence: z.object({ ...auth, ...responseOptions, frame_id: id,
+    steps: z.array(z.object({ action: phoneAction, wait_for: waitFor.optional(), settle_after_ms: z.number().int().min(0).max(2000).optional() }).strict()).min(1).max(8)
       .refine(steps => steps.reduce((total, step) => total + (step.wait_for?.timeout_ms ?? 0), 0) <= 30000),
     input_ready_timeout_ms: z.number().int().min(0).max(5000).default(2000),
     settle_ms: z.number().int().min(0).max(2000).default(0), observation: observationMode }).strict(),
-  phone_display: z.object({ ...auth, action: z.enum(['physical_off', 'wake']), observation: observationMode }).strict(),
-  phone_recover: z.object({ ...auth, action: z.enum(['check', 'reconnect', 'wake']), observation: observationMode }).strict()
+  phone_display: z.object({ ...auth, ...responseOptions, action: z.enum(['physical_off', 'wake']), observation: observationMode }).strict(),
+  phone_recover: z.object({ ...auth, ...responseOptions, action: z.enum(['check', 'reconnect', 'wake']), observation: observationMode }).strict()
 };
 export type PhoneTool = keyof typeof phoneSchemas;
 type Lease = { hash: string; expires: number; epoch: string };
@@ -59,13 +61,14 @@ type Request = { fingerprint: string; lease_hash: string; state: 'pending' | 'co
 const json = (value: unknown): CallToolResult => ({ content: [{ type: 'text', text: JSON.stringify(value) }] });
 const phoneError = (e: unknown) => e instanceof Error && /^PHONE_[A-Z_]+$|^ADB_FAILED_OR_TIMEOUT$/.test(e.message) ? e.message : 'PHONE_INVALID_REQUEST_OR_STATE';
 type SequenceStepResult = { index: number; action: string; status: string; request_sent: boolean; elapsed_ms: number;
-  input_wait?: { status: string; attempts: number; elapsed_ms: number }; result?: Record<string, unknown>; error?: string };
+  input_wait?: { status: string; attempts: number; elapsed_ms: number }; settle_after_ms?: number; result?: Record<string, unknown>; error?: string };
 type SequenceResult = { status: 'running' | 'completed' | 'stopped' | 'outcome_unknown'; request_id: string;
   completed_steps: number; total_steps: number; steps: SequenceStepResult[]; active_step?: number; stopped_at?: number;
   error?: string; observation_error?: string; timing: { total_ms: number; final_observation_ms: number; settle_ms: number } };
 
 export class PhoneService {
   readonly store: PhoneStore;
+  private diagnostics: PhoneDiagnostics;
   private apps: { at: number; packages: string[] } | undefined;
   private faults: { at: string; code: string }[] = [];
   private fault(code: string) {
@@ -74,7 +77,9 @@ export class PhoneService {
   }
   constructor(readonly config: PhoneConfig, private adb: Adb, private now = Date.now,
     private panel: PhonePanel | undefined = config.scrcpy_path ? new ScrcpyPanel(config) : undefined,
-    private automation: PhoneAutomation | undefined = config.appium_url ? new AppiumAutomation(config) : undefined) { this.store = new PhoneStore(config.state_dir); }
+    private automation: PhoneAutomation | undefined = config.appium_url ? new AppiumAutomation(config) : undefined) {
+    this.store = new PhoneStore(config.state_dir); this.diagnostics = new PhoneDiagnostics(config.state_dir);
+  }
   private async shell(...args: string[]) { return (await this.adb.run(['shell', ...args])).toString('utf8'); }
   private async epoch() {
     const epoch = await this.store.read<unknown>('epoch.json');
@@ -353,10 +358,11 @@ export class PhoneService {
   private async sequence(args: z.infer<typeof phoneSchemas.phone_sequence>): Promise<CallToolResult> {
     const started = performance.now(), key = args.lease_id;
     const waitBudget = args.settle_ms + args.steps.reduce((total, step) => total + (step.wait_for?.timeout_ms ?? 0)
-      + (step.action.type === 'text' ? args.input_ready_timeout_ms : 0), 0);
+      + (step.settle_after_ms ?? 0) + (step.action.type === 'text' ? args.input_ready_timeout_ms : 0), 0);
     if (waitBudget > 30000) throw new Error('PHONE_SEQUENCE_WAIT_BUDGET_EXCEEDED');
     const file = `request-${digest(args.request_id)}.json`;
-    const fingerprint = createHmac('sha256', key).update(JSON.stringify({ name: 'phone_sequence', ...args, lease_id: undefined })).digest('hex');
+    const fingerprint = createHmac('sha256', key).update(JSON.stringify({ name: 'phone_sequence', ...args, lease_id: undefined, response_detail: undefined,
+      steps: args.steps.map(step => ({ ...step, settle_after_ms: step.settle_after_ms || undefined })) })).digest('hex');
     const previous = await this.store.read<Request>(file);
     if (previous) {
       if (previous.lease_hash !== digest(key) || previous.fingerprint !== fingerprint) throw new Error('PHONE_REQUEST_CONFLICT');
@@ -400,8 +406,8 @@ export class PhoneService {
             if (ready.wait.status !== 'matched') throw new Error('PHONE_INPUT_READY_TIMEOUT');
           }
           const last = index === args.steps.length - 1;
-          const mode = last && args.settle_ms === 0 && !(args.observation === 'context' && step.wait_for) ? args.observation
-            : step.wait_for || args.steps[index + 1]?.action.type === 'tap_element' ? 'ui' : 'context';
+          const mode = last && args.settle_ms === 0 && !step.settle_after_ms && !(args.observation === 'context' && step.wait_for) ? args.observation
+            : step.wait_for || (!step.settle_after_ms && args.steps[index + 1]?.action.type === 'tap_element') ? 'ui' : 'context';
           const childRequestId = digest(`phone_sequence:${args.request_id}:${index}`);
           let response: CallToolResult;
           for (;;) {
@@ -438,7 +444,7 @@ export class PhoneService {
           if (stepResult) progress.result = stepResult;
           // A completed dispatch can still report a wait timeout. Its final frame
           // already describes that failure and does not need another screenshot.
-          if (body.frame_id && last && args.settle_ms === 0 && mode === args.observation) {
+          if (body.frame_id && last && args.settle_ms === 0 && !step.settle_after_ms && mode === args.observation) {
             finalResponse = response;
             result.timing.final_observation_ms = Number((stepResult?.timing as { observation_ms?: number } | undefined)?.observation_ms ?? 0);
           }
@@ -452,7 +458,14 @@ export class PhoneService {
           } else {
             const nextFrame = await this.store.read<Frame>('frame.json');
             if (!nextFrame || nextFrame.frame_id !== body.frame_id) throw new Error('PHONE_SEQUENCE_RESULT_INVALID');
-            frame = nextFrame; progress.status = 'completed'; result.completed_steps++;
+            frame = nextFrame;
+            if (step.settle_after_ms) {
+              await delay(step.settle_after_ms);
+              progress.settle_after_ms = step.settle_after_ms;
+              await this.lease(key);
+              if (args.steps[index + 1]?.action.type === 'tap_element') frame = (await this.capture(true, false)).frame;
+            }
+            progress.status = 'completed'; result.completed_steps++;
           }
         } catch (e) {
           progress.error = result.error = phoneError(e);
@@ -493,7 +506,7 @@ export class PhoneService {
     if (args.observation === 'context' && args.wait_for) throw new Error('PHONE_CONTEXT_WAIT_UNSUPPORTED');
     const key = args.lease_id as string, requestId = args.request_id as string;
     const file = `request-${digest(requestId)}.json`, fingerprint = createHmac('sha256', key).update(JSON.stringify({
-      name, ...args, lease_id: undefined, ...(args.observation === 'auto' ? {observation:undefined} : {})
+      name, ...args, lease_id: undefined, response_detail: undefined, ...(args.observation === 'auto' ? {observation:undefined} : {})
     })).digest('hex');
     // Check the durable receipt even if a crashed process left the operation lock behind.
     const previous = await this.store.read<Request>(file);
@@ -700,6 +713,14 @@ export class PhoneService {
     return lockHeld ? operation() : this.controlled(key, operation);
   }
   async call(name: PhoneTool, raw: unknown): Promise<CallToolResult> {
+    const startedAt = Date.now(), started = performance.now();
+    const response = await this.dispatch(name, raw);
+    const args = raw && typeof raw === 'object' ? raw as Record<string, unknown> : {};
+    const diagnostic = await this.diagnostics.record(name, args.request_id, startedAt, Math.round(performance.now() - started), response);
+    const output = args.response_detail === 'full' ? response : compactResponse(response);
+    return { ...output, content: [{ type: 'text', text: JSON.stringify({ ...responseBody(output), diagnostic }) }, ...output.content.filter(item => item.type !== 'text')] };
+  }
+  private async dispatch(name: PhoneTool, raw: unknown): Promise<CallToolResult> {
     try {
       const args = phoneSchemas[name].parse(raw) as Record<string, unknown>;
       if (name === 'phone_sequence') return await this.sequence(phoneSchemas.phone_sequence.parse(args));
