@@ -2,7 +2,10 @@
 
 ## Unreleased
 
-- Add opt-in `observation:context` and `phone_observe(ui:false,image:false)` for short, predetermined input sequences. Intermediate actions return current application/window and IME readiness without screenshots, UI dumps or a fixed settling delay; callers use already observed targets and inspect a final UI/image observation. Return server action/observation timing and teach callers to reuse returned observations and consolidate cart review.
+- Reduce phone observation latency by bundling ordered display/IME queries in one ADB process, reading the display section of window state, and overlapping PNG encoding with the final context query. Keep PNG quality, context consistency checks and serialized device access. Remove shopping-specific guidance from MCP tool descriptions.
+- Add `dist/src/phone/mcp-stdio.js PHONE_CONFIG_JSON` for local Codex/SSH sessions. It exposes the same nine phone tools and shared lease without a tunnel or the host task surface.
+
+- Add opt-in `observation:context` and `phone_observe(ui:false,image:false)` for short, predetermined input sequences. Intermediate actions return current application/window and IME readiness without screenshots, UI dumps or a fixed settling delay; callers use already observed targets and inspect a final UI/image observation. Return server action/observation timing.
 
 - Remove all phone input pixel/region comparisons and UI subtree/page-anchor comparisons. Coordinate actions no longer capture a pre-action screenshot; semantic clicks use the referenced observation’s coordinates. Text checks the active input connection. Preserve device context, coordinate bounds, short leases, pause and durable request deduplication.
 

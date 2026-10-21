@@ -102,9 +102,7 @@ export class PhoneService {
   async maintenanceCommand<T>(operation: () => Promise<T>): Promise<T> {
     return this.store.lock(async () => { await this.assertHostCommandAllowed(); return operation(); });
   }
-  private async context() {
-    // Fixed shell program, no caller-controlled interpolation. One bounded process per context.
-    const w = await this.shell('dumpsys window; wm size');
+  private parseContext(w: string) {
     const focus = /mCurrentFocus=(Window\{[^\r\n}]+\})/.exec(w)?.[1];
     const packageName = focus ? /\s([A-Za-z][\w.]*)\//.exec(focus)?.[1] ?? null : null;
     const degrees = /mRotation=ROTATION_(0|90|180|270)\b/.exec(w)?.[1];
@@ -116,15 +114,26 @@ export class PhoneService {
     const rotation = degrees === undefined ? Number(rawRotation) : Number(degrees) / 90;
     return { package: packageName, window: digest(focus), rotation, width: Number(size[rotation % 2 ? 2 : 1]), height: Number(size[rotation % 2 ? 1 : 2]) };
   }
+  private async context() {
+    return this.parseContext(await this.shell('dumpsys window displays; wm size'));
+  }
+  private async contextAndFocus(before?: ReturnType<PhoneService['parseContext']>) {
+    // Fixed programs keep the same read ordering while sharing one ADB process.
+    const output = await this.shell(before
+      ? 'dumpsys input_method; echo __WB_INPUT_CONTEXT__; dumpsys window displays; wm size'
+      : 'dumpsys window displays; wm size; echo __WB_CONTEXT_INPUT__; dumpsys input_method; echo __WB_INPUT_CONTEXT__; dumpsys window displays; wm size');
+    const parts = output.split(/^__WB_(?:CONTEXT_INPUT|INPUT_CONTEXT)__\r?$/m);
+    if (parts.length !== (before ? 2 : 3)) throw new Error('PHONE_DISPLAY_CONTEXT_UNKNOWN');
+    const initial = before ?? this.parseContext(parts[0]!);
+    const after = this.parseContext(parts.at(-1)!);
+    if (JSON.stringify(initial) !== JSON.stringify(after)) throw new Error('PHONE_FRAME_CHANGED_DURING_CAPTURE');
+    return { after, focus: inputFocusProof(parts.at(-2)!, initial.package) };
+  }
   private async readUi(context: Awaited<ReturnType<PhoneService['context']>>) {
     const raw = this.automation ? await this.automation.source() : (await this.adb.run(['exec-out', 'uiautomator', 'dump', '/dev/tty'])).toString('utf8');
     const xml = /((?:<\?xml[^?]*\?>\s*)?<hierarchy[\s\S]*?<\/hierarchy>)/.exec(raw)?.[1];
     if (!xml) throw new Error('PHONE_UI_DUMP_FAILED');
     return { xml, snapshot: uiSnapshot(xml, context.package, context.width, context.height) };
-  }
-  private async inputFocus(packageName: string): Promise<string | undefined> {
-    try { return inputFocusProof(await this.shell('dumpsys', 'input_method'), packageName); }
-    catch { return undefined; }
   }
   private async prepareIme() {
     if (!this.config.ime_enabled) return { status: 'not_configured' };
@@ -178,8 +187,7 @@ export class PhoneService {
     });
     if (image === false || (image === 'auto' && !reason)) {
       if (!fresh) throw new Error('PHONE_UI_DUMP_FAILED');
-      const capturedAt = this.now(), focus = await this.inputFocus(before.package), after = await this.context();
-      if (JSON.stringify(before) !== JSON.stringify(after)) throw new Error('PHONE_FRAME_CHANGED_DURING_CAPTURE');
+      const capturedAt = this.now(), {focus, after} = await this.contextAndFocus(before);
       const frame: Frame = { ...after, frame_id: token(), timestamp: new Date(capturedAt).toISOString(), at: capturedAt, ...(targets ? {targets} : {}), ...(focus ? {input_focus:focus} : {}) };
       await this.store.save('frame.json', frame);
       return { frame, ui: uiResult, semantic: fresh.snapshot, rendered: null, reason: image === 'auto' ? 'ui_sufficient' : 'requested_ui' };
@@ -191,21 +199,27 @@ export class PhoneService {
     if (!width || !height || width > 16384 || height > 16384) throw new Error('PHONE_INVALID_PNG');
     if (width !== before.width || height !== before.height) throw new Error('PHONE_FRAME_CHANGED_DURING_CAPTURE');
     const semantic = fresh?.snapshot;
-    const focus = await this.inputFocus(before.package), after = await this.context();
-    if (JSON.stringify(before) !== JSON.stringify(after)) throw new Error('PHONE_FRAME_CHANGED_DURING_CAPTURE');
     // A full serialized response stays comfortably below the tunnel's 10 MiB limit.
     const { default: sharp } = await import('sharp');
+    // Encoding does not touch the device; overlap it with the final context read.
+    // Settle both jobs before leaving the device lock, including on failure.
+    const results = await Promise.allSettled([
+      this.contextAndFocus(before),
+      sharp(png, { limitInputPixels: 40_000_000 }).resize({ width: 1280, height: 1280, fit: 'inside', withoutEnlargement: true })
+        .timeout({ seconds: 3 }).png({ compressionLevel: 9 }).toBuffer({ resolveWithObject: true })
+    ]);
+    const [contextResult, imageResult] = results;
+    if (contextResult.status === 'rejected') throw contextResult.reason;
+    if (imageResult.status === 'rejected') throw imageResult.reason;
+    const {focus, after} = contextResult.value, rendered = imageResult.value;
     const frame: Frame = { ...after, frame_id: token(), timestamp: new Date(capturedAt).toISOString(), at: capturedAt, width, height,
       ...(targets ? {targets} : {}), ...(focus ? {input_focus:focus} : {}) };
-    const rendered = await sharp(png, { limitInputPixels: 40_000_000 }).resize({ width: 1280, height: 1280, fit: 'inside', withoutEnlargement: true })
-      .timeout({ seconds: 3 }).png({ compressionLevel: 9 }).toBuffer({ resolveWithObject: true });
     if (rendered.data.length > 3 * 1024 * 1024 || Buffer.byteLength(JSON.stringify(uiResult)) > 512 * 1024) throw new Error('PHONE_OBSERVATION_TOO_LARGE');
     await this.store.save('frame.json', frame);
     return { frame, png: rendered.data, ui: uiResult, ...(semantic ? { semantic } : {}), rendered: { width: rendered.info.width, height: rendered.info.height }, reason: reason ?? 'requested_image' };
   }
   private async captureContext(): Promise<Awaited<ReturnType<PhoneService['capture']>>> {
-    const before = await this.context(), focus = await this.inputFocus(before.package), after = await this.context();
-    if (JSON.stringify(before) !== JSON.stringify(after)) throw new Error('PHONE_FRAME_CHANGED_DURING_CAPTURE');
+    const {focus, after} = await this.contextAndFocus();
     const at = this.now();
     const frame: Frame = { ...after, at, timestamp: new Date(at).toISOString(), frame_id: token(),
       context_only: true, ...(focus ? {input_focus: focus} : {}) };
@@ -346,8 +360,7 @@ export class PhoneService {
           if (current.window !== expected.window || current.package !== expected.package || current.rotation !== expected.rotation || current.width !== expected.width || current.height !== expected.height) throw new Error('PHONE_FRAME_CHANGED');
           inputValidation = 'fresh_context';
           if (a.type === 'text') {
-            if (!expected.input_focus || expected.input_focus !== await this.inputFocus(current.package!)) throw new Error('PHONE_UI_TEXT_FOCUS_CHANGED');
-            if (JSON.stringify(current) !== JSON.stringify(await this.context())) throw new Error('PHONE_FRAME_CHANGED_DURING_CAPTURE');
+            if (!expected.input_focus || expected.input_focus !== (await this.contextAndFocus(current)).focus) throw new Error('PHONE_UI_TEXT_FOCUS_CHANGED');
             inputValidation = 'fresh_input_connection';
           }
           if (this.automation && ['tap', 'long_press', 'swipe', 'scroll'].includes(a.type) && 'x' in a) {

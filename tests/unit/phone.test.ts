@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm, readFile, readdir, mkdir, writeFile } from 'node:fs/promises';
 import { tmpdir, hostname } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { randomBytes, createHmac } from 'node:crypto';
@@ -42,10 +43,19 @@ class FakeAdb implements Adb {
   wrote = false;
   async run(args: string[]) {
     this.calls.push(args);
+    return this.execute(args);
+  }
+  private async execute(args: string[]): Promise<Buffer> {
     if (this.fail) throw new Error('ADB_FAILED_OR_TIMEOUT');
     if (args[0] === 'devices') return Buffer.from(`List of devices attached\nAYCVVB2B09005827\t${this.state}\n`);
     if (this.state !== 'device') throw new Error('ADB_FAILED_OR_TIMEOUT');
     const s = args.join(' ');
+    if (args[0] === 'shell' && args.length === 2 && args[1]!.includes(';')) {
+      const output: Buffer[] = [];
+      for (const command of args[1]!.split(';')) output.push(await this.execute(['shell', ...command.trim().split(' ')]), Buffer.from('\n'));
+      return Buffer.concat(output);
+    }
+    if (args[0] === 'shell' && args[1] === 'echo') return Buffer.from(args.slice(2).join(' '));
     if (s.includes('dumpsys window')) {
       if (this.wrote && this.transientAfterWrite-- > 0) return Buffer.from('mCurrentFocus=null');
       return Buffer.from(`mCurrentFocus=Window{${this.windowId} u0 ${this.package}/${this.activity}}\nmRotation=${this.rotation}\nPhysical size: 1080x2400`);
@@ -140,6 +150,51 @@ test('failed context capture preserves unknown outcomes and never repeats dispat
   assert.equal(data(await f.phone.call('phone_input',args)).status,'outcome_unknown');
   assert.equal(f.adb.writes.length,1);
 });
+
+test('bundled context reads detect a window transition during IME inspection',async t=>{
+  const f=await fixture(t), original=(f.adb as any).execute.bind(f.adb);
+  (f.adb as any).execute=async(args:string[])=>{
+    const result=await original(args);
+    if(args.join(' ')==='shell dumpsys input_method')f.adb.windowId='new-window';
+    return result;
+  };
+  assert.equal(data(await f.phone.call('phone_observe',{ui:false,image:false})).error,'PHONE_FRAME_CHANGED_DURING_CAPTURE');
+  assert.equal(await f.phone.store.read('frame.json'),undefined);
+});
+
+test('bundled context reads preserve missing input connection and reject malformed output',async t=>{
+  const f=await fixture(t), original=(f.adb as any).execute.bind(f.adb);
+  (f.adb as any).execute=async(args:string[])=>args.join(' ')==='shell dumpsys input_method'
+    ?Buffer.from('Service input_method unavailable'):original(args);
+  const result=data(await f.phone.call('phone_observe',{ui:false,image:false}));
+  assert.equal(result.observation.input_ready,false);
+  const lease_id=await f.acquire();
+  assert.equal(data(await f.phone.call('phone_input',{lease_id,frame_id:result.frame_id,request_id:'missing-ime-000001',
+    action:{type:'text',text:'test',mode:'replace'},observation:'context'})).error,'PHONE_UI_TEXT_FOCUS_CHANGED');
+  const run=f.adb.run.bind(f.adb);
+  f.adb.run=async args=>Buffer.from((await run(args)).toString().replace('__WB_CONTEXT_INPUT__','truncated'));
+  assert.equal(data(await f.phone.call('phone_observe',{ui:false,image:false})).error,'PHONE_DISPLAY_CONTEXT_UNKNOWN');
+  assert.equal(f.adb.writes.length,0);
+});
+
+test('failed image encoding settles the in-flight context read before releasing the device lock',async t=>{
+  const f=await fixture(t), original=f.adb.run.bind(f.adb);
+  f.adb.png=f.adb.png.subarray(0,33);
+  let started!:()=>void,finish!:()=>void;
+  const reading=new Promise<void>(resolve=>{started=resolve;}),released=new Promise<void>(resolve=>{finish=resolve;});
+  f.adb.run=async args=>{
+    if(args.join(' ').includes('__WB_INPUT_CONTEXT__')){started();await released;}
+    return original(args);
+  };
+  const pending=f.phone.call('phone_observe',{image:true,ui:false});
+  await reading;
+  try {
+    assert.equal(data(await f.phone.call('phone_observe',{ui:false,image:false})).error,'PHONE_BUSY_OR_ABANDONED_LOCK');
+  } finally { finish(); }
+  assert.ok(data(await pending).error);
+  assert.equal(await f.phone.store.read('frame.json'),undefined);
+  assert.equal((await readdir(f.dir)).includes('operation.lock'),false);
+});
 async function fixture(t: test.TestContext) {
   const dir = await mkdtemp(join(tmpdir(), 'phone-test-'));
   t.after(() => rm(dir, { recursive: true, force: true }));
@@ -152,6 +207,22 @@ async function fixture(t: test.TestContext) {
   const observe = async () => data(await phone.call('phone_observe', {})).frame_id as string;
   return { dir, config, adb, phone, acquire, observe, tick: (ms: number) => { now += ms; } };
 }
+
+test('local phone stdio exposes phone tools with context mode and no host task surface',async t=>{
+  const f=await fixture(t),path=join(f.dir,'phone.json');
+  await writeFile(path,JSON.stringify(f.config));
+  const client=new Client({name:'local-phone-test',version:'1'});
+  const transport=new StdioClientTransport({command:process.execPath,
+    args:[fileURLToPath(new URL('../../src/phone/mcp-stdio.js',import.meta.url)),path],stderr:'pipe'});
+  try {
+    await client.connect(transport);
+    const tools=(await client.listTools()).tools;
+    assert.deepEqual(tools.map(tool=>tool.name).sort(),Object.keys(phoneSchemas).sort());
+    const input=tools.find(tool=>tool.name==='phone_input')!;
+    assert.ok(JSON.stringify(input.inputSchema).includes('context'));
+    assert.equal(tools.some(tool=>tool.description?.includes('multi-product shopping')),false);
+  } finally {await client.close();}
+});
 test('fake-device MCP tools/list and tools/call expose strict nine-tool opt-in surface', async t => {
   const f = await fixture(t), server = new McpServer({ name: 'fake-phone', version: '1' });
   registerPhoneTools(server, f.phone);
