@@ -15,6 +15,7 @@ import { AppiumAutomation, type PhoneAutomation } from './automation.js';
 import { touchGesture, touchPoint, nativeScroll, varyScrollDuration, scrollPoints, type TouchPlan, type TouchBounds } from './gestures.js';
 import { inputFocusProof } from './focus.js';
 import { imageFallbackReason } from './observation.js';
+import { parseDisplayContext, parseWindowOwner, type DisplayContext, type PhoneContext } from './context.js';
 
 const id = z.string().regex(/^[A-Za-z0-9_-]{16,128}$/);
 const pkg = z.string().regex(/^[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)+$/).max(200);
@@ -114,32 +115,32 @@ export class PhoneService {
   async maintenanceCommand<T>(operation: () => Promise<T>): Promise<T> {
     return this.store.lock(async () => { await this.assertHostCommandAllowed(); return operation(); });
   }
-  private parseContext(w: string) {
-    const focus = /mCurrentFocus=(Window\{[^\r\n}]+\})/.exec(w)?.[1];
-    const packageName = focus ? /\s([A-Za-z][\w.]*)\//.exec(focus)?.[1] ?? null : null;
-    const degrees = /mRotation=ROTATION_(0|90|180|270)\b/.exec(w)?.[1];
-    const rawRotation = /(?:mRotation|rotation)=([0-3])\b/.exec(w)?.[1];
-    const size = /Physical size: (\d+)x(\d+)/.exec(w);
-    const override = /Override size: (\d+)x(\d+)/.exec(w);
-    if ((degrees === undefined && rawRotation === undefined) || !packageName || !size || !focus) throw new Error('PHONE_DISPLAY_CONTEXT_UNKNOWN');
-    if (override && (override[1] !== size[1] || override[2] !== size[2])) throw new Error('PHONE_DISPLAY_OVERRIDE_UNSUPPORTED');
-    const rotation = degrees === undefined ? Number(rawRotation) : Number(degrees) / 90;
-    return { package: packageName, window: digest(focus), rotation, width: Number(size[rotation % 2 ? 2 : 1]), height: Number(size[rotation % 2 ? 1 : 2]) };
+  private async resolveContext(parsed: DisplayContext): Promise<PhoneContext> {
+    const { focus, ...context } = parsed;
+    if (context.package) return { ...context, package: context.package };
+    // Custom window titles do not identify their owner. Resolve only these cases
+    // from the exact window, then verify that the display did not change meanwhile.
+    const output = await this.shell('dumpsys window windows; echo __WB_WINDOW_OWNER_CONTEXT__; dumpsys window displays; wm size');
+    const parts = output.split(/^__WB_WINDOW_OWNER_CONTEXT__\r?$/m);
+    if (parts.length !== 2) throw new Error('PHONE_DISPLAY_CONTEXT_UNKNOWN');
+    if (JSON.stringify(parseDisplayContext(parts[1]!)) !== JSON.stringify(parsed)) throw new Error('PHONE_FRAME_CHANGED_DURING_CAPTURE');
+    return { ...context, package: parseWindowOwner(parts[0]!, focus) };
   }
   private async context() {
-    return this.parseContext(await this.shell('dumpsys window displays; wm size'));
+    return this.resolveContext(parseDisplayContext(await this.shell('dumpsys window displays; wm size')));
   }
-  private async contextAndFocus(before?: ReturnType<PhoneService['parseContext']>) {
+  private async contextAndFocus(before?: PhoneContext) {
     // Fixed programs keep the same read ordering while sharing one ADB process.
     const output = await this.shell(before
       ? 'dumpsys input_method; echo __WB_INPUT_CONTEXT__; dumpsys window displays; wm size'
       : 'dumpsys window displays; wm size; echo __WB_CONTEXT_INPUT__; dumpsys input_method; echo __WB_INPUT_CONTEXT__; dumpsys window displays; wm size');
     const parts = output.split(/^__WB_(?:CONTEXT_INPUT|INPUT_CONTEXT)__\r?$/m);
     if (parts.length !== (before ? 2 : 3)) throw new Error('PHONE_DISPLAY_CONTEXT_UNKNOWN');
-    const initial = before ?? this.parseContext(parts[0]!);
-    const after = this.parseContext(parts.at(-1)!);
-    if (JSON.stringify(initial) !== JSON.stringify(after)) throw new Error('PHONE_FRAME_CHANGED_DURING_CAPTURE');
-    return { after, focus: inputFocusProof(parts.at(-2)!, initial.package) };
+    const afterParsed = parseDisplayContext(parts.at(-1)!);
+    if (!before && JSON.stringify(parseDisplayContext(parts[0]!)) !== JSON.stringify(afterParsed)) throw new Error('PHONE_FRAME_CHANGED_DURING_CAPTURE');
+    const after = await this.resolveContext(afterParsed);
+    if (before && JSON.stringify(before) !== JSON.stringify(after)) throw new Error('PHONE_FRAME_CHANGED_DURING_CAPTURE');
+    return { after, focus: inputFocusProof(parts.at(-2)!, after.package) };
   }
   private async readUi(context: Awaited<ReturnType<PhoneService['context']>>) {
     const raw = this.automation ? await this.automation.source() : (await this.adb.run(['exec-out', 'uiautomator', 'dump', '/dev/tty'])).toString('utf8');
