@@ -25,6 +25,15 @@ const selector = z.object({ text: z.string().max(500).optional(), resource_id: z
   description: z.string().max(500).optional(), class: z.string().max(200).optional() }).strict().refine(value => Object.keys(value).length > 0);
 const waitFor = z.object({ selector, state: z.enum(['visible', 'enabled', 'gone']).default('visible'),
   timeout_ms: z.number().int().min(100).max(30000).default(10000), stable_ms: z.number().int().min(0).max(1000).default(200) }).strict();
+const phoneAction = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('tap_element'), element_id: z.string().regex(/^[a-f0-9]{64}$/) }).strict(),
+  z.object({ type: z.literal('tap'), x: point, y: point }).strict(),
+  z.object({ type: z.literal('long_press'), x: point, y: point, duration_ms: z.number().int().min(400).max(2000).default(600) }).strict(),
+  z.object({ type: z.literal('swipe'), x: point, y: point, to_x: point, to_y: point, duration_ms: z.number().int().min(100).max(2000).default(300) }).strict(),
+  z.object({ type: z.literal('scroll'), x: point, y: point, to_x: point, to_y: point, duration_ms: z.number().int().min(100).max(2000).default(300) }).strict(),
+  z.object({ type: z.literal('key'), key: z.enum(['BACK', 'HOME', 'APP_SWITCH', 'ENTER', 'DEL']) }).strict(),
+  z.object({ type: z.literal('text'), text: z.string().min(1).max(4096), mode: z.enum(['append', 'replace']) }).strict()
+]);
 export const phoneSchemas = {
   server_status: z.object({}).strict(),
   phone_acquire_control: z.object({}).strict(),
@@ -32,15 +41,12 @@ export const phoneSchemas = {
   phone_observe: z.object({ ui: z.boolean().default(false), image: z.boolean().default(true), wait_for: waitFor.optional() }).strict(),
   phone_list_apps: z.object({ search: z.string().max(100).default(''), offset: z.number().int().min(0).max(10000).default(0), limit: z.number().int().min(1).max(100).default(50), refresh: z.boolean().default(false) }).strict(),
   phone_open_app: z.object({ ...auth, package: pkg, wait_for: waitFor.optional(), observation: observationMode }).strict(),
-  phone_input: z.object({ ...auth, frame_id: id, wait_for: waitFor.optional(), observation: observationMode, action: z.discriminatedUnion('type', [
-    z.object({ type: z.literal('tap_element'), element_id: z.string().regex(/^[a-f0-9]{64}$/) }).strict(),
-    z.object({ type: z.literal('tap'), x: point, y: point }).strict(),
-    z.object({ type: z.literal('long_press'), x: point, y: point, duration_ms: z.number().int().min(400).max(2000).default(600) }).strict(),
-    z.object({ type: z.literal('swipe'), x: point, y: point, to_x: point, to_y: point, duration_ms: z.number().int().min(100).max(2000).default(300) }).strict(),
-    z.object({ type: z.literal('scroll'), x: point, y: point, to_x: point, to_y: point, duration_ms: z.number().int().min(100).max(2000).default(300) }).strict(),
-    z.object({ type: z.literal('key'), key: z.enum(['BACK', 'HOME', 'APP_SWITCH', 'ENTER', 'DEL']) }).strict(),
-    z.object({ type: z.literal('text'), text: z.string().min(1).max(4096), mode: z.enum(['append', 'replace']) }).strict()
-  ]) }).strict(),
+  phone_input: z.object({ ...auth, frame_id: id, wait_for: waitFor.optional(), observation: observationMode, action: phoneAction }).strict(),
+  phone_sequence: z.object({ ...auth, frame_id: id,
+    steps: z.array(z.object({ action: phoneAction, wait_for: waitFor.optional() }).strict()).min(1).max(8)
+      .refine(steps => steps.reduce((total, step) => total + (step.wait_for?.timeout_ms ?? 0), 0) <= 30000),
+    input_ready_timeout_ms: z.number().int().min(0).max(5000).default(2000),
+    settle_ms: z.number().int().min(0).max(2000).default(0), observation: observationMode }).strict(),
   phone_display: z.object({ ...auth, action: z.enum(['physical_off', 'wake']), observation: observationMode }).strict(),
   phone_recover: z.object({ ...auth, action: z.enum(['check', 'reconnect', 'wake']), observation: observationMode }).strict()
 };
@@ -50,6 +56,12 @@ const leaseSchema = z.object({ hash: z.string().regex(/^[a-f0-9]{64}$/), expires
 type Frame = { frame_id: string; timestamp: string; at: number; package: string | null; window: string; rotation: number; width: number; height: number; targets?: { id: string; point: [number, number] }[]; input_focus?: string; context_only?: true };
 type Request = { fingerprint: string; lease_hash: string; state: 'pending' | 'completed'; result?: unknown };
 const json = (value: unknown): CallToolResult => ({ content: [{ type: 'text', text: JSON.stringify(value) }] });
+const phoneError = (e: unknown) => e instanceof Error && /^PHONE_[A-Z_]+$|^ADB_FAILED_OR_TIMEOUT$/.test(e.message) ? e.message : 'PHONE_INVALID_REQUEST_OR_STATE';
+type SequenceStepResult = { index: number; action: string; status: string; request_sent: boolean; elapsed_ms: number;
+  input_wait?: { status: string; attempts: number; elapsed_ms: number }; result?: Record<string, unknown>; error?: string };
+type SequenceResult = { status: 'running' | 'completed' | 'stopped' | 'outcome_unknown'; request_id: string;
+  completed_steps: number; total_steps: number; steps: SequenceStepResult[]; active_step?: number; stopped_at?: number;
+  error?: string; observation_error?: string; timing: { total_ms: number; final_observation_ms: number; settle_ms: number } };
 
 export class PhoneService {
   readonly store: PhoneStore;
@@ -307,7 +319,175 @@ export class PhoneService {
     const matches = this.apps.packages.filter(p => p.toLowerCase().includes(args.search.toLowerCase()));
     return json({ packages: matches.slice(args.offset, args.offset + args.limit), total: matches.length, cached_at: this.apps.at });
   }
-  private async write(name: PhoneTool, args: Record<string, unknown>) {
+  private async sequenceTextReady(expected: Frame, key: string, timeout: number, refreshAfterTap = false) {
+    const start = performance.now(), deadline = start + timeout;
+    let frame = expected, attempts = 0;
+    if (this.now() - expected.at > this.config.frame_seconds * 1000) throw new Error('PHONE_FRAME_EXPIRED');
+    // An existing connection is verified by write(); waiting must not replace it.
+    // Only a proven pre-dispatch focus race following this sequence's tap may
+    // request a fresh connection. The original window/context still has to match.
+    if (refreshAfterTap) { const { input_focus: _focus, ...unfocused } = expected; frame = unfocused; }
+    while (!frame.input_focus && performance.now() < deadline) {
+      await this.lease(key);
+      const current = await this.captureContext();
+      attempts++;
+      if (['window', 'package', 'rotation', 'width', 'height'].some(k => current.frame[k as keyof Frame] !== expected[k as keyof Frame]))
+        throw new Error('PHONE_FRAME_CHANGED');
+      frame = current.frame;
+      if (frame.input_focus) break;
+      if (performance.now() < deadline) await delay(Math.min(100, deadline - performance.now()));
+    }
+    return { frame, wait: { status: frame.input_focus ? 'matched' : 'timeout', attempts, elapsed_ms: Math.round(performance.now() - start) } };
+  }
+  private async sequenceObservation(mode: z.infer<typeof observationMode>) {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return mode === 'context' ? await this.captureContext() : await this.capture(mode !== 'image', mode === 'auto' ? 'auto' : mode === 'image');
+      } catch (e) {
+        if (attempt >= 2 || !['PHONE_FRAME_CHANGED_DURING_CAPTURE', 'PHONE_DISPLAY_CONTEXT_UNKNOWN'].includes(phoneError(e))) throw e;
+        await delay(100 * (attempt + 1));
+      }
+    }
+  }
+  private async sequence(args: z.infer<typeof phoneSchemas.phone_sequence>): Promise<CallToolResult> {
+    const started = performance.now(), key = args.lease_id;
+    const waitBudget = args.settle_ms + args.steps.reduce((total, step) => total + (step.wait_for?.timeout_ms ?? 0)
+      + (step.action.type === 'text' ? args.input_ready_timeout_ms : 0), 0);
+    if (waitBudget > 30000) throw new Error('PHONE_SEQUENCE_WAIT_BUDGET_EXCEEDED');
+    const file = `request-${digest(args.request_id)}.json`;
+    const fingerprint = createHmac('sha256', key).update(JSON.stringify({ name: 'phone_sequence', ...args, lease_id: undefined })).digest('hex');
+    const previous = await this.store.read<Request>(file);
+    if (previous) {
+      if (previous.lease_hash !== digest(key) || previous.fingerprint !== fingerprint) throw new Error('PHONE_REQUEST_CONFLICT');
+      const saved = previous.result as SequenceResult | undefined;
+      const status = previous.state === 'pending' ? 'outcome_unknown' : saved?.status ?? 'outcome_unknown';
+      return json({ request_id: args.request_id, status, replayed: true, result: saved ? { ...saved, status } : undefined,
+        observation: 'not_replayed; call phone_observe for a fresh frame' });
+    }
+    return this.controlled(key, async () => {
+      if ((await readdir(this.store.dir)).filter(n => n.startsWith('request-')).length + args.steps.length + 1 > 10000) throw new Error('PHONE_JOURNAL_FULL');
+      if (await this.store.read(file)) throw new Error('PHONE_REQUEST_RETRY');
+      let frame = await this.store.read<Frame>('frame.json');
+      if (!frame || frame.frame_id !== args.frame_id || this.now() - frame.at > this.config.frame_seconds * 1000) throw new Error('PHONE_FRAME_EXPIRED');
+      const result: SequenceResult = { status: 'running', request_id: args.request_id, completed_steps: 0, total_steps: args.steps.length, steps: [],
+        timing: { total_ms: 0, final_observation_ms: 0, settle_ms: 0 } };
+      const save = (state: Request['state']) => this.store.save(file, { fingerprint, lease_hash: digest(key), state, result });
+      await save('pending');
+      let journalFailed = false;
+      const persist = async (state: Request['state']) => {
+        try { await save(state); return true; }
+        catch {
+          journalFailed = true; result.status = 'outcome_unknown'; result.error = 'PHONE_SEQUENCE_JOURNAL_FAILED';
+          this.fault(result.error); return false;
+        }
+      };
+      let finalResponse: CallToolResult | undefined;
+      for (const [index, step] of args.steps.entries()) {
+        result.active_step = index;
+        // Persist the next index before any input. A crashed sequence is reported,
+        // never resumed automatically, even when its completed child receipts exist.
+        if (!await persist('pending')) break;
+        const stepStarted = performance.now();
+        const progress: SequenceStepResult = { index, action: step.action.type, status: 'stopped', request_sent: false, elapsed_ms: 0 };
+        try {
+          await this.lease(key);
+          const inputStarted = performance.now(), inputDeadline = inputStarted + args.input_ready_timeout_ms;
+          if (step.action.type === 'text') {
+            if (!this.config.ime_enabled) throw new Error('PHONE_IME_NOT_CONFIGURED');
+            const ready = await this.sequenceTextReady(frame, key, args.input_ready_timeout_ms);
+            frame = ready.frame; progress.input_wait = ready.wait;
+            if (ready.wait.status !== 'matched') throw new Error('PHONE_INPUT_READY_TIMEOUT');
+          }
+          const last = index === args.steps.length - 1;
+          const mode = last && args.settle_ms === 0 && !(args.observation === 'context' && step.wait_for) ? args.observation
+            : step.wait_for || args.steps[index + 1]?.action.type === 'tap_element' ? 'ui' : 'context';
+          const childRequestId = digest(`phone_sequence:${args.request_id}:${index}`);
+          let response: CallToolResult;
+          for (;;) {
+            try {
+              response = await this.write('phone_input', phoneSchemas.phone_input.parse({ lease_id: key,
+                request_id: childRequestId, frame_id: frame.frame_id,
+                action: step.action, wait_for: step.wait_for, observation: mode }), true);
+              break;
+            } catch (e) {
+              const previousAction = args.steps[index - 1]?.action.type;
+              if (phoneError(e) !== 'PHONE_UI_TEXT_FOCUS_CHANGED' || step.action.type !== 'text'
+                || !['tap', 'tap_element'].includes(previousAction ?? '')) throw e;
+              // This exact rejection occurs before write() journals or dispatches
+              // text. An existing receipt must never be replayed as a new attempt.
+              if (await this.store.read(`request-${digest(childRequestId)}.json`)) throw new Error('PHONE_OUTCOME_UNKNOWN');
+              const remaining = inputDeadline - performance.now();
+              if (remaining <= 0) {
+                progress.input_wait = { status: 'timeout', attempts: progress.input_wait?.attempts ?? 0,
+                  elapsed_ms: Math.round(performance.now() - inputStarted) };
+                throw new Error('PHONE_INPUT_READY_TIMEOUT');
+              }
+              const ready = await this.sequenceTextReady(frame, key, remaining, true);
+              frame = ready.frame;
+              progress.input_wait = { ...ready.wait, attempts: (progress.input_wait?.attempts ?? 0) + ready.wait.attempts,
+                elapsed_ms: Math.round(performance.now() - inputStarted) };
+              if (ready.wait.status !== 'matched') throw new Error('PHONE_INPUT_READY_TIMEOUT');
+            }
+          }
+          const first = response.content[0];
+          if (first?.type !== 'text') throw new Error('PHONE_SEQUENCE_RESULT_INVALID');
+          const body = JSON.parse(first.text) as { frame_id?: string; status?: string; result?: Record<string, unknown> };
+          const stepResult = body.result;
+          progress.request_sent = stepResult?.request_sent === true || body.status === 'outcome_unknown';
+          if (stepResult) progress.result = stepResult;
+          // A completed dispatch can still report a wait timeout. Its final frame
+          // already describes that failure and does not need another screenshot.
+          if (body.frame_id && last && args.settle_ms === 0 && mode === args.observation) {
+            finalResponse = response;
+            result.timing.final_observation_ms = Number((stepResult?.timing as { observation_ms?: number } | undefined)?.observation_ms ?? 0);
+          }
+          const wait = stepResult?.wait as { status?: string } | undefined;
+          if (body.status === 'outcome_unknown') {
+            progress.status = result.status = 'outcome_unknown'; result.error = 'PHONE_OUTCOME_UNKNOWN';
+          } else if (stepResult?.status !== 'completed' || !body.frame_id) {
+            throw new Error('PHONE_SEQUENCE_RESULT_INVALID');
+          } else if (wait && wait.status !== 'matched') {
+            progress.status = result.status = 'stopped'; result.error = wait.status === 'timeout' ? 'PHONE_SEQUENCE_WAIT_TIMEOUT' : 'PHONE_SEQUENCE_WAIT_UNAVAILABLE';
+          } else {
+            const nextFrame = await this.store.read<Frame>('frame.json');
+            if (!nextFrame || nextFrame.frame_id !== body.frame_id) throw new Error('PHONE_SEQUENCE_RESULT_INVALID');
+            frame = nextFrame; progress.status = 'completed'; result.completed_steps++;
+          }
+        } catch (e) {
+          progress.error = result.error = phoneError(e);
+          progress.status = result.status = result.error === 'PHONE_OUTCOME_UNKNOWN' ? 'outcome_unknown' : 'stopped';
+          if (result.status === 'outcome_unknown') progress.request_sent = true;
+        }
+        progress.elapsed_ms = Math.round(performance.now() - stepStarted);
+        result.steps.push(progress);
+        delete result.active_step;
+        if (progress.status !== 'completed') result.stopped_at = index;
+        if (!await persist('pending') || progress.status !== 'completed') break;
+      }
+      if (result.status === 'running') result.status = 'completed';
+      if (!finalResponse) {
+        const observationStarted = performance.now();
+        if (result.status === 'completed' && args.settle_ms) {
+          await delay(args.settle_ms); result.timing.settle_ms = args.settle_ms;
+        }
+        try { finalResponse = this.observation(await this.sequenceObservation(args.observation)); }
+        catch (e) {
+          result.observation_error = phoneError(e);
+          if (result.status === 'completed') { result.status = 'stopped'; result.error = 'PHONE_SEQUENCE_OBSERVATION_FAILED'; }
+          try { finalResponse = this.observation(await this.captureContext()); } catch { /* The result still reports every completed step. */ }
+        }
+        result.timing.final_observation_ms = Math.round(performance.now() - observationStarted) - result.timing.settle_ms;
+      }
+      result.timing.total_ms = Math.round(performance.now() - started);
+      if (!journalFailed) await persist('completed');
+      await this.renew(key).catch(() => {});
+      if (!finalResponse) return json({ result, observation: 'unavailable; call phone_observe before continuing' });
+      const first = finalResponse.content[0];
+      if (first?.type !== 'text') throw new Error('PHONE_SEQUENCE_RESULT_INVALID');
+      return { content: [{ type: 'text', text: JSON.stringify({ ...JSON.parse(first.text), result }) }, ...finalResponse.content.slice(1)] };
+    });
+  }
+  private async write(name: PhoneTool, args: Record<string, unknown>, lockHeld = false) {
     const started = performance.now();
     if (args.observation === 'context' && args.wait_for) throw new Error('PHONE_CONTEXT_WAIT_UNSUPPORTED');
     const key = args.lease_id as string, requestId = args.request_id as string;
@@ -321,7 +501,7 @@ export class PhoneService {
       return json({ request_id: requestId, status: previous.state === 'pending' ? 'outcome_unknown' : 'completed', replayed: true,
         result: previous.result, observation: 'not_replayed; call phone_observe for a fresh frame' });
     }
-    return this.controlled(key, async () => {
+    const operation = async () => {
       if ((await readdir(this.store.dir)).filter(n => n.startsWith('request-')).length >= 10000) throw new Error('PHONE_JOURNAL_FULL');
       // The lock serializes reads as well as writes to the device and the journal.
       if (await this.store.read(file)) throw new Error('PHONE_REQUEST_RETRY');
@@ -515,11 +695,13 @@ export class PhoneService {
         this.fault('PHONE_OUTCOME_UNKNOWN');
         return json({ status: 'outcome_unknown', request_id: requestId, observation: 'unavailable; do not repeat under a new request_id' });
       }
-    });
+    };
+    return lockHeld ? operation() : this.controlled(key, operation);
   }
   async call(name: PhoneTool, raw: unknown): Promise<CallToolResult> {
     try {
       const args = phoneSchemas[name].parse(raw) as Record<string, unknown>;
+      if (name === 'phone_sequence') return await this.sequence(phoneSchemas.phone_sequence.parse(args));
       if (['phone_input', 'phone_open_app', 'phone_display', 'phone_recover'].includes(name)) return await this.write(name, args);
       return await this.store.lock(async () => {
         if (name === 'server_status') return json(await this.status());
@@ -546,7 +728,7 @@ export class PhoneService {
         return json({ lease_id: leaseId, expires_at: new Date(expires).toISOString(), identity: 'bearer_capability; actual client account unknown', text_input: textInput });
       });
     } catch (e) {
-      const message = e instanceof Error && /^PHONE_[A-Z_]+$|^ADB_FAILED_OR_TIMEOUT$/.test(e.message) ? e.message : 'PHONE_INVALID_REQUEST_OR_STATE';
+      const message = phoneError(e);
       this.fault(message);
       return { isError: true, ...json({ error: message }) };
     }

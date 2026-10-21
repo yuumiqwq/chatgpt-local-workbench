@@ -1,6 +1,6 @@
 # Lenovo Legion 手机模块部署与验收
 
-本模块在完整 Local Workbench 的同一个 MCP stdio 服务中增加九个工具，原有 host、workspace、Codex、DSH、Task 和持久 Work 功能保留。没有手机配置，或配置为 `{"enabled":false}` 时，工具列表与宿主说明维持原样。初始开发使用模拟设备，后续已在联想拯救者与荣耀 80 上部署；具体版本的现场结果见同目录验收文档。
+本模块在完整 Local Workbench 的同一个 MCP stdio 服务中增加十个工具，原有 host、workspace、Codex、DSH、Task 和持久 Work 功能保留。没有手机配置，或配置为 `{"enabled":false}` 时，工具列表与宿主说明维持原样。初始开发使用模拟设备，后续已在联想拯救者与荣耀 80 上部署；具体版本的现场结果见同目录验收文档。
 
 目标主机为 Lenovo Legion R7000 2020 / 82B6，hostname 为 `LAPTOP-NHHRR3GO`。目标手机为 HONOR 80 / ANN-AN00，固定 ADB serial 为 `AYCVVB2B09005827`，预期 Android 15 / MagicOS 9，原始显示尺寸为 1080×2400。这些是部署目标资料，运行状态以现场探测为准。
 
@@ -41,7 +41,7 @@ node scripts/legion-phone-check.mjs E:\LocalWorkbenchPrivate\workspaces.json
 node scripts/legion-phone-check.mjs E:\LocalWorkbenchPrivate\workspaces.json --ui
 ```
 
-脚本核对 hostname、serial、原有代表工具与九个新增工具，执行状态、按需截图和应用列表探测。它不点击、不启动应用、不唤醒、不切换输入法，也不管理任何守护器；会启动并关闭一个短期 MCP 子进程，并更新本地观察元数据。ADB 与 uiautomator 本身仍会产生临时进程。脚本不保存截图或 XML，只输出不含屏幕内容的摘要；在 ROG 上直接拒绝运行。当前 Workbench 配置应已完成旧字段迁移，避免新建 stdio 进程触发原有配置迁移逻辑。
+脚本核对 hostname、serial、原有代表工具与十个新增工具，执行状态、按需截图和应用列表探测。它不点击、不启动应用、不唤醒、不切换输入法，也不管理任何守护器；会启动并关闭一个短期 MCP 子进程，并更新本地观察元数据。ADB 与 uiautomator 本身仍会产生临时进程。脚本不保存截图或 XML，只输出不含屏幕内容的摘要；在 ROG 上直接拒绝运行。当前 Workbench 配置应已完成旧字段迁移，避免新建 stdio 进程触发原有配置迁移逻辑。
 
 随后通过同一 Lenovo tunnel 调用 `server_status`、`list_workspaces` 和 `phone_observe`，核实真实 tunnel 连通性。上述本地脚本通过仅证明本地 stdio 通路；现场报告应分别记录本地、tunnel、设备读操作和设备写操作的证据，不将其中一种替代其他种类。
 
@@ -55,7 +55,13 @@ node scripts/legion-phone-check.mjs E:\LocalWorkbenchPrivate\workspaces.json --u
 
 版本 `1.7.0-local.14` 将窗口与输入连接查询按原有顺序合并到一次 ADB 调用，并让 PNG 编码与末次状态读取并行完成。图像尺寸和压缩质量保持原值；工具说明仅介绍接口用法，应用操作经验暂存于本文。荣耀 80 同页交替测试中，轻量状态、控件及截图返回耗时的中位数分别约为 370、617 和 1481 毫秒，首次调用及网络、模型决策时间另计。
 
-拯救者本机及 SSH 会话使用 `legion_phone` 本地 MCP，启动命令为 Node 运行 `dist/src/phone/mcp-stdio.js`，参数为现有手机配置文件的绝对路径。此入口只注册九个手机工具，复用已有租约和手机连接，在 Codex 用户配置中登记后供新会话加载。原有完整 Workbench 和隧道继续保留，操作手机优先走本地进程。登记方式见 [OpenAI MCP 配置文档](https://learn.chatgpt.com/docs/extend/mcp?surface=cli)。
+拯救者本机及 SSH 会话使用 `legion_phone` 本地 MCP，启动命令为 Node 运行 `dist/src/phone/mcp-stdio.js`，参数为现有手机配置文件的绝对路径。此入口只注册十个手机工具，复用已有租约和手机连接，在 Codex 用户配置中登记后供新会话加载。原有完整 Workbench 和隧道继续保留，操作手机优先走本地进程。登记方式见 [OpenAI MCP 配置文档](https://learn.chatgpt.com/docs/extend/mcp?surface=cli)。
+
+版本 `1.7.0-local.15` 增加 `phone_sequence`，调用方传入当前 `frame_id` 与 `steps`，本机连续执行最多八个动作，最后返回一次观察及逐步耗时。步骤沿用 `phone_input.action`，可以附加 `wait_for`；文字输入前自动等待输入连接就绪，`input_ready_timeout_ms` 默认 2000。需要给自绘页面留出加载时间时，可设置 `settle_ms`，范围为 0–2000 毫秒，默认不增加等待。控件等待、各次文本等待和末尾等待的配置预算合计最多 30 秒，设备命令耗时另计。
+
+连续步骤由调用方根据当前页面组合，通用执行器负责等待和执行。中间结果通常只有应用与输入连接状态；下一步使用控件 ID 或指定控件条件时会读取界面数据。某步失败或等待超时后返回已完成的步骤和当前状态；重复提交同一请求号只查询已有记录，随后可用新的观察决定下一步。工具不会保存应用专属的购物流程。
+
+文字紧接序列中的点击时，如果输入连接正在切换且文字尚未发送，执行器会在原等待时间内刷新连接后继续。已有执行记录或结果不明的动作不会重新发送；正常就绪的输入不附加等待。
 
 本机小象搜索实测中，输入回车没有提交搜索，点击页面“搜索”按钮才进入结果列表。搜索框取得输入连接可能略晚于点击，先用轻量读取确认 `input_ready` 再输入；页面搜索后的加载也需要留出时间。本次将选中搜索框、填写关键词和点击搜索连续执行，等待 800 毫秒后只返回结果图，合计约 7 秒，未更改购物车。
 

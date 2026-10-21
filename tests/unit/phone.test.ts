@@ -603,7 +603,7 @@ test('maintenance command holds device mutex; lease rejects wrappers and pause b
   await assert.rejects(f.phone.maintenanceCommand(async () => { executed = true; })); assert.equal(executed, false);
 });
 
-test('real stdio preserves all original tools when disabled and only adds nine when opted in', async t => {
+test('real stdio preserves all original tools when disabled and adds the phone tool set when opted in', async t => {
   const f = await fixture(t), configPath = join(f.dir, 'workspaces.json');
   await writeFile(configPath, '[]');
   const connect = async () => {
@@ -619,7 +619,7 @@ test('real stdio preserves all original tools when disabled and only adds nine w
   const enabled = await connect();
   try {
     const all = (await enabled.listTools()).tools;
-    assert.equal(all.length, baseline.length + 9);
+    assert.equal(all.length, baseline.length + Object.keys(phoneSchemas).length);
     assert.deepEqual(all.filter(t => !Object.hasOwn(phoneSchemas, t.name)), baseline);
     assert.match(enabled.getInstructions()!, /maintenance authority/);
   } finally { await enabled.close(); }

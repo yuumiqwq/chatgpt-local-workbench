@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Add `phone_sequence` for caller-supplied short input sequences, automatic IME readiness waiting, optional final settling, and one final observation. Preserve the shared control lock and durable receipts, report step timings and partial progress, and stop on failure or condition timeout without replaying actions.
+- Recover a transient IME connection change after an in-sequence tap only while text remains undispatched, within the original readiness budget. Keep the ready path free of additional polling and preserve pending/unknown outcomes without replay.
+
 - Reduce phone observation latency by bundling ordered display/IME queries in one ADB process, reading the display section of window state, and overlapping PNG encoding with the final context query. Keep PNG quality, context consistency checks and serialized device access. Remove shopping-specific guidance from MCP tool descriptions.
 - Add `dist/src/phone/mcp-stdio.js PHONE_CONFIG_JSON` for local Codex/SSH sessions. It exposes the same nine phone tools and shared lease without a tunnel or the host task surface.
 
