@@ -21,7 +21,7 @@ const parse = r => {
 try {
   await client.connect(transport);
   const names = new Set((await client.listTools()).tools.map(t => t.name));
-  for (const name of ['list_workspaces', 'host_capabilities', 'run_temp', 'server_status', 'phone_acquire_control', 'phone_release_control', 'phone_observe', 'phone_list_apps', 'phone_open_app', 'phone_input', 'phone_sequence', 'phone_display', 'phone_recover']) assert.ok(names.has(name), name);
+  for (const name of ['list_workspaces', 'host_capabilities', 'run_temp', 'server_status', 'phone_acquire_control', 'phone_release_control', 'phone_observe', 'phone_list_apps', 'phone_open_app', 'phone_input', 'phone_sequence', 'phone_drag', 'phone_display', 'phone_recover']) assert.ok(names.has(name), name);
   parse(await client.callTool({ name: 'list_workspaces', arguments: {} }));
   const status = parse(await client.callTool({ name: 'server_status', arguments: {} }, undefined, { timeout: 60000 }));
   assert.equal(status.hostname.toUpperCase(), 'LAPTOP-NHHRR3GO');
