@@ -3,8 +3,8 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import {
-  appendFileSync, closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync,
-  readdirSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync,
+  appendFileSync, closeSync, copyFileSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync,
+  readdirSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync,
 } from 'node:fs';
 import { hostname } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
@@ -79,6 +79,22 @@ export function loadConfig(file) {
   const workRegistries = privateFiles(raw.work_registries, 'work_registries');
   const protectedFiles = privateFiles(raw.protected_files, 'protected_files');
   if (inside(stateDirectory, configFile)) fail('CONFIG', 'Keep the configuration outside its dedicated state directory.');
+  let releases;
+  if (raw.releases !== undefined) {
+    if (!raw.releases || !['directory', 'pointer'].every(key =>
+      typeof raw.releases[key] === 'string' && isAbsolute(raw.releases[key]))) {
+      fail('CONFIG', 'releases requires absolute directory and pointer paths.');
+    }
+    const directory = futurePath(raw.releases.directory), pointer = futurePath(raw.releases.pointer);
+    const keep = raw.releases.keep ?? 3;
+    if (!Number.isInteger(keep) || keep < 2 || keep > 20 ||
+        [repository, stateDirectory].some(root => inside(root, directory) || inside(directory, root)) ||
+        inside(repository, pointer) || inside(directory, pointer) ||
+        [configFile, ...protectedFiles, ...workRegistries].some(file => inside(directory, file) || file === pointer)) {
+      fail('CONFIG', 'Use a dedicated release directory, an unprotected pointer outside the checkout, and keep 2..20 releases.');
+    }
+    releases = { directory, pointer, keep };
+  }
   if (!raw.tunnel || typeof raw.tunnel.id !== 'string' || raw.tunnel.id.length === 0) {
     fail('CONFIG', 'tunnel.id must identify this computer\'s existing tunnel.');
   }
@@ -93,7 +109,7 @@ export function loadConfig(file) {
   };
   const npmCli = absolute(raw.npm_cli ?? join(dirname(process.execPath), 'node_modules/npm/bin/npm-cli.js'), 'npm_cli');
   const config = {
-    configFile, repository, stateDirectory, workRegistries, protectedFiles, npmCli,
+    configFile, repository, stateDirectory, workRegistries, protectedFiles, npmCli, releases,
     git: raw.git_executable === undefined ? 'git' : absolute(raw.git_executable, 'git_executable'),
     commandTimeout: seconds(raw.command_timeout_seconds, 1200, 'command_timeout_seconds'),
     healthTimeout: seconds(raw.health_timeout_seconds, 90, 'health_timeout_seconds'),
@@ -172,6 +188,35 @@ function buildDigest(repository) {
   return digest.digest('hex');
 }
 
+function releasePath(config, directory) {
+  if (typeof directory !== 'string' || dirname(resolve(directory)) !== config.releases.directory ||
+      realpathSync(directory) !== resolve(directory)) fail('RELEASE_PATH', 'Release must be an ordinary child of its configured directory.');
+  return directory;
+}
+
+function activeReleaseMatches(config, journal) {
+  if (!config.releases) return true;
+  try {
+    const pointer = readJson(config.releases.pointer);
+    return pointer.version === 1 && pointer.commit === journal.target &&
+      pointer.directory === releasePath(config, journal.release_directory);
+  } catch { return false; }
+}
+
+function retireReleases(config, journal, event) {
+  if (!config.releases) return;
+  const all = [...new Set([journal.release_directory, ...(journal.retained_releases ?? [])])];
+  journal.retained_releases = all.slice(0, config.releases.keep);
+  for (const directory of all.slice(config.releases.keep)) {
+    try {
+      releasePath(config, directory);
+      if (readJson(join(directory, '.workbench-release.json')).scope !== config.scope) continue;
+      rmSync(directory, { recursive: true });
+      event('release-retired', { directory });
+    } catch { event('release-retained', { directory }); }
+  }
+}
+
 // No implicit shell: paths, arguments and private environment values stay separate.
 export function runCommand({ executable, args, cwd, env, timeout, signal, log, event, label }) {
   return new Promise((accept, reject) => {
@@ -227,10 +272,10 @@ export async function deploy(configFile, mode = 'check', { signal, onEvent = () 
     appendFileSync(eventLog, JSON.stringify(record) + '\n', { mode: 0o600 });
     onEvent(record);
   };
-  const invoke = (label, executable, args, env = process.env, timeout = config.commandTimeout) => {
+  const invoke = (label, executable, args, env = process.env, timeout = config.commandTimeout, cwd = config.repository) => {
     event('stage', { label });
     appendFileSync(commandLog, `\n[${new Date().toISOString()}] ${label}\n`);
-    return runCommand({ executable, args, cwd: config.repository, env, timeout, signal,
+    return runCommand({ executable, args, cwd, env, timeout, signal,
       log: commandLog, event, label });
   };
   const git = async (...args) => (await invoke('git ' + args[0], config.git, ['-c', 'core.longpaths=true', ...args],
@@ -308,7 +353,8 @@ export async function deploy(configFile, mode = 'check', { signal, onEvent = () 
     const current = await status();
     let buildMatches = false;
     if (head === target && journal.build_digest) {
-      try { buildMatches = buildDigest(config.repository) === journal.build_digest; }
+      try { buildMatches = activeReleaseMatches(config, journal) &&
+        buildDigest(config.releases ? journal.release_directory : config.repository) === journal.build_digest; }
       catch (error) { if (error.code !== 'ENOENT' && error.code !== 'BUILD_OUTPUT') throw error; }
     }
     const protectedMatch = JSON.stringify(digests) === JSON.stringify(journal.protected_digests);
@@ -338,6 +384,7 @@ export async function deploy(configFile, mode = 'check', { signal, onEvent = () 
         current.running && current.healthy && current.pid !== journal.previous_pid &&
         buildMatches && protectedMatch) {
       journal.deployed_commit = target;
+      retireReleases(config, journal, event);
       save('complete');
       event('result', { result: 'recovered', target });
       return { result: 'recovered', target };
@@ -347,19 +394,44 @@ export async function deploy(configFile, mode = 'check', { signal, onEvent = () 
     journal.protected_digests = digests;
     save('updating');
     if (head !== target) await git('merge', '--ff-only', '--no-edit', target);
+    let buildDirectory = config.repository;
+    const previousPointer = config.releases && existsSync(config.releases.pointer) ? readFileSync(config.releases.pointer) : null;
+    if (config.releases) {
+      mkdirSync(config.releases.directory, { recursive: true });
+      buildDirectory = join(config.releases.directory, target.slice(0, 12) + '-' + randomUUID().slice(0, 8));
+      mkdirSync(buildDirectory);
+      releasePath(config, buildDirectory);
+      for (const file of (await git('ls-files', '-z')).split('\0').filter(Boolean)) {
+        const source = resolve(config.repository, file), destination = resolve(buildDirectory, file);
+        if (!inside(config.repository, source) || !inside(buildDirectory, destination) || !lstatSync(source).isFile()) {
+          fail('RELEASE_SOURCE', 'Release source must contain ordinary tracked files.');
+        }
+        mkdirSync(dirname(destination), { recursive: true });
+        copyFileSync(source, destination);
+      }
+      atomicJson(join(buildDirectory, '.workbench-release.json'), { version: 1, scope: config.scope, commit: target });
+      journal.release_directory = buildDirectory;
+      journal.previous_pointer = previousPointer === null ? null : JSON.parse(previousPointer.toString('utf8'));
+    }
     for (const [phase, args] of [
       ['installing', ['ci']], ['typechecking', ['run', 'typecheck']],
       ['testing', ['test']], ['building', ['run', 'build']],
     ]) {
       save(phase);
-      await invoke('npm ' + args.join(' '), process.execPath, [config.npmCli, ...args]);
+      await invoke('npm ' + args.join(' '), process.execPath, [config.npmCli, ...args], process.env, config.commandTimeout, buildDirectory);
     }
     await clean();
     if (await git('rev-parse', 'HEAD') !== target) fail('HEAD_CHANGED', 'HEAD changed during validation.');
     assertIdle(config.workRegistries);
     assertDigests(config.workRegistries, registryDigests);
     assertDigests(protectedFiles, digests);
-    journal.build_digest = buildDigest(config.repository);
+    journal.build_digest = buildDigest(buildDirectory);
+    if (config.releases) {
+      const pointerNow = existsSync(config.releases.pointer) ? readFileSync(config.releases.pointer) : null;
+      if (previousPointer === null ? pointerNow !== null : !pointerNow?.equals(previousPointer)) {
+        fail('RELEASE_CHANGED', 'Active release changed during validation.');
+      }
+    }
     const beforeStop = await status();
     if (beforeStop.pid !== current.pid || beforeStop.running !== current.running) {
       fail('RUNTIME_CHANGED', 'Tunnel process changed during validation; retry after it settles.');
@@ -369,6 +441,9 @@ export async function deploy(configFile, mode = 'check', { signal, onEvent = () 
     const stopped = await status();
     if (stopped.running) fail('STOP_FAILED', 'The old tunnel is still running; startup was not attempted.');
     assertDigests(protectedFiles, digests);
+    if (config.releases) {
+      atomicJson(config.releases.pointer, { version: 1, commit: target, directory: buildDirectory });
+    }
     releaseRegistries();
     save('starting');
     await tunnel('start');
@@ -386,12 +461,24 @@ export async function deploy(configFile, mode = 'check', { signal, onEvent = () 
       await delay(Math.min(1000, deadline - Date.now()), undefined, { signal });
     }
     journal.deployed_commit = target;
+    retireReleases(config, journal, event);
     save('complete');
     event('result', { result: 'deployed', target });
     return { result: 'deployed', target };
   } catch (error) {
     // Keep the last successful phase, including 'starting', for a safe subsequent apply.
     event('failure', { code: error.code ?? 'IO', phase: journal?.phase ?? 'preflight' });
+    if (config.releases && journal?.release_directory &&
+        ['installing', 'typechecking', 'testing', 'building'].includes(journal.phase)) {
+      try {
+        const directory = releasePath(config, journal.release_directory);
+        const pointer = existsSync(config.releases.pointer) ? readJson(config.releases.pointer) : null;
+        if (pointer?.directory !== directory && readJson(join(directory, '.workbench-release.json')).scope === config.scope) {
+          rmSync(directory, { recursive: true });
+          event('unactivated-release-removed', { directory });
+        }
+      } catch { /* Keep uncertain paths for inspection; never remove the active release. */ }
+    }
     throw error;
   } finally {
     try { releaseRegistries(); }

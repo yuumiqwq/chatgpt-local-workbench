@@ -4,10 +4,12 @@ import {
   existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync,
 } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
+import { hostname } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import test from 'node:test';
 import { acquireLock, deploy, loadConfig, runCommand } from '../../scripts/deploy-windows.mjs';
+import { autoDeploy } from '../../scripts/auto-deploy-windows.mjs';
 
 const script = fileURLToPath(new URL('../../scripts/deploy-windows.mjs', import.meta.url));
 const generated = resolve('codex-generated', 'deployment-tests');
@@ -34,6 +36,15 @@ const calls = read('calls.json'); calls.push(action); save('calls.json', calls);
 if (control.fail === action) { console.error('fixture failure: ' + action); process.exit(7); }
 if (npm) {
   if (!fs.existsSync(join(root, 'works.json.lock'))) throw new Error('Missing registry lock');
+  if (control.liveDllPath) {
+    if (fs.readFileSync(control.liveDllPath, 'utf8') !== 'in-use native library') throw new Error('Live dependencies were changed');
+    if (action === 'npm ci') {
+      fs.rmSync(join(process.cwd(), 'node_modules'), { recursive: true, force: true });
+      fs.mkdirSync(join(process.cwd(), 'node_modules'));
+      fs.writeFileSync(join(process.cwd(), 'node_modules', 'native.dll'), 'candidate native library');
+    }
+    if (fs.readFileSync(control.liveDllPath, 'utf8') !== 'in-use native library') throw new Error('npm ci touched the live library');
+  }
   if (control.delay) await new Promise(resolve => setTimeout(resolve, control.delay));
   if (control.mutateAt === action) fs.writeFileSync(control.mutateFile, control.mutateContent);
   if (action === 'npm run build') {
@@ -49,6 +60,10 @@ if (npm) {
     runtime.process_running = true; runtime.healthy = !control.unhealthy; runtime.ready = !control.unhealthy;
     runtime.process.pid += 1;
     if (control.newId) runtime.tunnel_id = control.newId;
+    if (control.releasePointer) {
+      runtime.loadedRelease = JSON.parse(fs.readFileSync(control.releasePointer, 'utf8'));
+      runtime.loadedCode = fs.readFileSync(join(runtime.loadedRelease.directory, 'dist', 'src', 'mcp-stdio.js'), 'utf8');
+    }
   }
   save('runtime.json', runtime);
   if (action === 'start' && control.failAfterStart) process.exit(8);
@@ -146,6 +161,112 @@ test('two independent computers fast-forward separately and preserve local ident
     assert.equal((await deploy(m.configFile, 'apply')).result, 'up-to-date');
     assert.deepEqual(m.calls().slice(before.length), ['status']);
   }
+});
+
+function enableReleases(f, keep = 3) {
+  const releases = { directory: join(f.privateDir, 'releases'), pointer: join(f.privateDir, 'active-release.json'), keep };
+  save(f.configFile, { ...f.config, releases });
+  return releases;
+}
+
+test('release deployment installs and validates away from in-use dependencies before switching startup', async t => {
+  const f = fixture(t), releases = enableReleases(f), target = f.publish();
+  mkdirSync(join(f.repo, 'node_modules'));
+  const liveDllPath = join(f.repo, 'node_modules', 'native.dll');
+  writeFileSync(liveDllPath, 'in-use native library');
+  mkdirSync(join(f.repo, 'dist', 'src'), { recursive: true });
+  writeFileSync(join(f.repo, 'dist', 'src', 'mcp-stdio.js'), 'existing running code');
+  f.control({ liveDllPath, releasePointer: releases.pointer });
+  assert.equal((await deploy(f.configFile, 'apply')).result, 'deployed');
+  const active = json(releases.pointer);
+  assert.equal(active.commit, target);
+  assert.equal(f.runtime().loadedCode, 'release 2\n');
+  assert.equal(f.runtime().loadedRelease.directory, active.directory);
+  assert.equal(readFileSync(liveDllPath, 'utf8'), 'in-use native library');
+  assert.equal(readFileSync(join(f.repo, 'dist', 'src', 'mcp-stdio.js'), 'utf8'), 'existing running code');
+  assert.equal(readFileSync(join(active.directory, 'node_modules', 'native.dll'), 'utf8'), 'candidate native library');
+  const calls = f.calls().length;
+  assert.equal((await deploy(f.configFile, 'apply')).result, 'up-to-date');
+  assert.deepEqual(f.calls().slice(calls), ['status']);
+  save(releases.pointer, { ...active, commit: 'wrong-commit' });
+  assert.equal((await deploy(f.configFile, 'check')).deployment_needed, true);
+  noLocks(f);
+});
+
+test('failed release validation retains the active version and removes only its unused candidate', async t => {
+  const f = fixture(t), releases = enableReleases(f);
+  f.control({ releasePointer: releases.pointer });
+  await deploy(f.configFile, 'apply');
+  const active = readFileSync(releases.pointer, 'utf8'), runtime = f.runtime(), calls = f.calls().length;
+  f.publish(); f.control({ fail: 'npm test', releasePointer: releases.pointer });
+  await rejection(deploy(f.configFile, 'apply'), 'COMMAND');
+  assert.equal(readFileSync(releases.pointer, 'utf8'), active);
+  assert.deepEqual(f.runtime(), runtime);
+  assert.equal(readdirSync(releases.directory).length, 1);
+  assert.equal(f.calls().slice(calls).some(x => x === 'stop' || x === 'start'), false);
+  noLocks(f);
+});
+
+test('release startup recovery does not restart twice and retention keeps the configured prior versions', async t => {
+  const f = fixture(t), releases = enableReleases(f, 2);
+  f.control({ releasePointer: releases.pointer, failAfterStart: true });
+  await rejection(deploy(f.configFile, 'apply'), 'COMMAND');
+  const initialDirectory = json(releases.pointer).directory, calls = f.calls().length;
+  f.control({ releasePointer: releases.pointer });
+  assert.equal((await deploy(f.configFile, 'apply')).result, 'recovered');
+  assert.deepEqual(f.calls().slice(calls), ['status']);
+  f.publish(); await deploy(f.configFile, 'apply');
+  f.publish('release 3\n'); await deploy(f.configFile, 'apply');
+  assert.equal(f.runtime().loadedCode, 'release 3\n');
+  assert.equal(readdirSync(releases.directory).length, 2);
+  assert.equal(existsSync(initialDirectory), false);
+  noLocks(f);
+});
+
+test('release locations may not contain source, configuration, or the mutable pointer', t => {
+  const f = fixture(t);
+  for (const releases of [
+    { directory: f.repo, pointer: join(f.privateDir, 'active.json') },
+    { directory: f.privateDir, pointer: join(f.root, 'active.json') },
+    { directory: join(f.privateDir, 'releases'), pointer: join(f.privateDir, 'releases', 'active.json') },
+    { directory: join(f.privateDir, 'releases'), pointer: join(f.privateDir, 'profile.yaml') },
+  ]) {
+    save(f.configFile, { ...f.config, releases });
+    assert.throws(() => loadConfig(f.configFile), error => error.code === 'CONFIG');
+  }
+});
+
+test('automatic deployment coordinates the guardian and phone, skips unchanged versions, and restores maintenance state on failure', async t => {
+  const f = fixture(t), releases = enableReleases(f);
+  const phone = join(f.privateDir, 'phone'); mkdirSync(phone);
+  const guardian = { pause_file: join(f.privateDir, 'guardian.paused'), state_file: join(f.privateDir, 'guardian.json') };
+  save(guardian.state_file, { paused: false, at: new Date().toISOString() });
+  const watcher = setInterval(() => {
+    if (existsSync(guardian.pause_file)) save(guardian.state_file, { paused: true, at: new Date().toISOString() });
+  }, 20);
+  t.after(() => clearInterval(watcher));
+  const auto = join(f.privateDir, 'auto.json');
+  save(auto, { version: 1, hostname: hostname(), deployment_config: f.configFile, guardian, phone_state_directory: phone });
+  f.control({ releasePointer: releases.pointer });
+  assert.equal((await autoDeploy(auto)).status, 'deployed');
+  const calls = f.calls().length;
+  assert.equal((await autoDeploy(auto)).status, 'up-to-date');
+  assert.deepEqual(f.calls().slice(calls), ['status']);
+  assert.equal(existsSync(guardian.pause_file), false);
+  assert.equal(existsSync(join(phone, 'operation.lock')), false);
+  f.publish();
+  save(join(phone, 'lease.json'), { expires: Date.now() + 60000 });
+  await rejection(autoDeploy(auto), 'BUSY');
+  assert.equal(existsSync(join(phone, 'operation.lock')), false);
+  assert.equal(existsSync(guardian.pause_file), false);
+  save(join(phone, 'lease.json'), null);
+  f.control({ fail: 'npm ci' });
+  await rejection(autoDeploy(auto), 'COMMAND');
+  assert.equal(existsSync(guardian.pause_file), false);
+  assert.equal(existsSync(join(phone, 'operation.lock')), false);
+  assert.equal(existsSync(join(f.config.state_directory, 'automatic.lock')), false);
+  assert.equal(json(join(f.config.state_directory, 'automatic.json')).status, 'failed');
+  assert.equal(json(releases.pointer).commit, f.initial);
 });
 
 for (const [name, dirty] of [

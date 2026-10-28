@@ -1,6 +1,6 @@
 # Windows Git 更新部署
 
-`scripts/deploy-windows.ps1` 是 Windows PowerShell 5.1/PowerShell 7 入口，`scripts/deploy-windows.mjs` 使用 Node.js 内置模块执行部署。两台电脑各自维护一个 `main` 检出目录、私有配置和部署状态，各自从 `origin/main` 获取提交。脚本每次只操作配置所指向的本机隧道，不联系另一台电脑。
+`scripts/deploy-windows.ps1` 是 Windows PowerShell 5.1/PowerShell 7 入口，`scripts/deploy-windows.mjs` 使用 Node.js 内置模块执行部署。各台电脑维护自己的 `main` 检出目录、私有配置和部署状态，统一从 `origin/main` 获取提交。脚本每次只操作配置所指向的本机隧道，不联系另一台电脑。
 
 需要 Node.js 22 及以上、npm、Git，以及已经能够启动的本机 MCP 隧道。使用隧道现有的 Windows 账户运行，以沿用该账户的 Git 凭据及运行环境。脚本不安装服务，也不创建或修改 Windows 计划任务；服务启动由私有配置中的现有入口完成。
 
@@ -127,6 +127,43 @@ Git、依赖安装或验证失败时，脚本不调用隧道启停命令。已�
 退出码 `0` 表示检查或部署成功，`2` 表示条件暂不满足，例如任务占用、工作树有改动或锁被占用，`1` 表示命令、配置或验证失败。普通失败和 Ctrl+C 会等待本次创建的子进程退出后释放锁；超时或取消时，Windows 使用该子进程的 PID 终止其进程树，不按进程名称结束服务。
 
 异常断电或强制结束进程可能留下锁。脚本不会按锁文件年龄自动删除锁，以免上一轮的 npm 子进程仍在修改目录。事件日志包含每个命令的 PID；核实锁中进程及日志中的子进程均已结束后，只移除本次部署遗留的 `<git-common-dir>/bridge-deploy.lock`、`<state_directory>/deployment.lock` 和各任务记录旁的 `.lock`，随后重新执行 `Apply`。保留 `deployment.json` 及原有工作、隧道和会话数据。修改部署配置后使用新的专用状态目录，以明确区分不同配置的部署记录。
+
+## 独立版本目录与自动更新
+
+启用了手机模块等原生依赖的 Windows 服务会占用 DLL，直接在运行目录执行 `npm ci` 可能删除部分依赖后失败。自动更新使用独立版本目录：在部署配置中增加以下 `releases` 对象，并为这一配置使用新的 `state_directory`。
+
+```json
+{
+  "releases": {
+    "directory": "D:/StudyServer/runtime/workbench-releases",
+    "pointer": "D:/StudyServer/config/workbench/active-release.json",
+    "keep": 3
+  }
+}
+```
+
+每次部署把已快进的 Git 跟踪文件复制到新目录，在那里安装依赖并完成原有检查。验证成功、旧隧道停止后，脚本原子更新 `pointer` 指向的 JSON 文件，其中包含 `version: 1`、完整 `commit` 和绝对 `directory`。本机既有启动器应读取这个文件，校验目录位于配置的版本根目录内，然后运行该目录的 `dist/src/mcp-stdio.js`；尚无指针时可以使用原来的检出目录。主机的工作区配置、会话路径和隧道 ID 继续沿用原值。
+
+安装或测试失败会保留当前启动位置并移除未启用的候选目录。成功后默认保留三个已部署版本，仅清理部署记录中属于同一配置的较早版本。旧检出目录中的 `node_modules` 和 `dist` 不参与替换，已使用这些目录的独立手机进程可以继续运行。
+
+`scripts/auto-deploy-windows.mjs --config <本机自动部署配置>` 先执行检查，仅在需要部署时执行 Apply。它要求启用独立版本目录，可同时配合现有的看护暂停文件和手机操作锁。以下文件也应保存在仓库之外，路径采用目标主机的实际值。
+
+```json
+{
+  "version": 1,
+  "hostname": "LAPTOP-NHHRR3GO",
+  "deployment_config": "D:/StudyServer/config/workbench/git-deploy-auto.json",
+  "guardian": {
+    "pause_file": "D:/StudyServer/private/legion-runtime.paused",
+    "state_file": "D:/StudyServer/codex-generated/deployment/runtime/guardian-state.json"
+  },
+  "phone_state_directory": "D:/StudyServer/private/phone-device-state"
+}
+```
+
+`guardian` 和 `phone_state_directory` 按本机运行方式配置；没有对应组件时可省略。协调器等待看护程序确认暂停后才开始部署，手机正在被控制时返回退出码 2，并在结束后恢复本次取得的暂停状态和操作锁。工作区任务占用、本地修改或未推送提交仍按原部署规则延后处理。`automatic.json` 记录最近一次检查或部署的结果。
+
+Windows 计划任务可以使用原服务账户，在登录时以及每 15 分钟执行一次本机隐藏启动入口。入口需提供原有 Node、Git 和 npm 的 PATH，使用隐藏窗口并等待协调器退出；任务设置为忽略重叠运行、错过计划后补执行。公开仓库的自动拉取不需要 GitHub 推送授权。电脑关机或原服务账户未登录时不会执行，恢复登录后继续检查。
 
 ## 测试
 
