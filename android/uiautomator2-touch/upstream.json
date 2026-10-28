@@ -1,0 +1,13 @@
+{
+  "repository": "https://github.com/appium/appium-uiautomator2-server",
+  "tag": "v10.6.6",
+  "commit": "4a8139161cbb3aad078e36539995eb734297d56e",
+  "license": "Apache-2.0",
+  "application_id": "io.appium.uiautomator2.server.touchtest",
+  "purpose": "Isolated input-event diagnostic build; does not replace the installed Appium server.",
+  "extensions": {
+    "pointer_parameters": ["deviceId"],
+    "pointer_move": ["touchMajor", "touchMinor", "toolMajor", "toolMinor", "orientation"]
+  },
+  "interpolation": "Preserve and interpolate pressure, size and contact axes during intermediate moves."
+}

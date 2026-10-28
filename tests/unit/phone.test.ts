@@ -24,6 +24,7 @@ import { physicalPanelState } from '../../src/phone/panel.js';
 import type { PhoneAutomation } from '../../src/phone/automation.js';
 import type { TouchPlan } from '../../src/phone/gestures.js';
 import { digest } from '../../src/phone/store.js';
+import type { PhoneDrag } from '../../src/phone/drag.js';
 
 class FakeAdb implements Adb {
   calls: string[][] = [];
@@ -207,6 +208,61 @@ async function fixture(t: test.TestContext) {
   const observe = async () => data(await phone.call('phone_observe', {})).frame_id as string;
   return { dir, config, adb, phone, acquire, observe, tick: (ms: number) => { now += ms; } };
 }
+
+test('continuous drag holds across observations, deduplicates moves and cancels on release', async t => {
+  const f = await fixture(t), calls: string[] = [];
+  const drag: PhoneDrag = { async start() { calls.push('down'); }, async move() { calls.push('move'); }, async end(cancel) { calls.push(cancel ? 'cancel' : 'up'); } };
+  const phone = new PhoneService(f.config, f.adb, Date.now, undefined, undefined, drag);
+  const lease_id = data(await phone.call('phone_acquire_control', {})).lease_id;
+  let frame_id = data(await phone.call('phone_observe', { ui: false, image: true })).frame_id;
+  const begin = await phone.call('phone_drag', { lease_id, request_id: 'held-start-0000001', phase: 'start', frame_id, x: 100, y: 300 });
+  const drag_id = data(begin).result.drag.id;
+  assert.equal(data(begin).result.drag.held, true); assert.equal(begin.content.filter(x => x.type === 'image').length, 1);
+  frame_id = data(await phone.call('phone_observe', { ui: false, image: true })).frame_id;
+  assert.deepEqual(calls, ['down']);
+  const other = new PhoneService(f.config, f.adb);
+  assert.equal(data(await other.call('phone_input', { lease_id, frame_id, request_id: 'held-conflict-0001', action: { type: 'tap', x: 50, y: 50 } })).error, 'PHONE_DRAG_ACTIVE');
+  const move = { lease_id, request_id: 'held-move-00000001', phase: 'move', drag_id, x: 300, y: 300, observation: 'image' };
+  assert.equal(data(await phone.call('phone_drag', move)).result.drag.held, true);
+  assert.equal(data(await phone.call('phone_drag', move)).replayed, true);
+  assert.deepEqual(calls, ['down', 'move']);
+  await phone.call('phone_release_control', { lease_id });
+  assert.deepEqual(calls, ['down', 'move', 'cancel']);
+});
+
+test('continuous drag lifts only on end and cancels if the active window changes', async t => {
+  const f = await fixture(t), calls: string[] = [];
+  const drag: PhoneDrag = { async start() { calls.push('down'); }, async move() { calls.push('move'); }, async end(cancel) { calls.push(cancel ? 'cancel' : 'up'); } };
+  const phone = new PhoneService(f.config, f.adb, Date.now, undefined, undefined, drag);
+  const lease_id = data(await phone.call('phone_acquire_control', {})).lease_id;
+  for (const scenario of ['end', 'change'] as const) {
+    const frame_id = data(await phone.call('phone_observe', { ui: false, image: true })).frame_id;
+    const start = data(await phone.call('phone_drag', { lease_id, request_id: `held-${scenario}-start-01`, phase: 'start', frame_id, x: 100, y: 300 }));
+    const drag_id = start.result.drag.id;
+    if (scenario === 'end') {
+      const end = data(await phone.call('phone_drag', { lease_id, request_id: 'held-finish-000001', phase: 'end', drag_id }));
+      assert.equal(end.result.drag.held, false); assert.deepEqual(calls, ['down', 'up']);
+    } else {
+      f.adb.windowId = 'new-window';
+      const result = data(await phone.call('phone_drag', { lease_id, request_id: 'held-changed-00001', phase: 'move', drag_id, x: 200, y: 300 }));
+      assert.equal(result.error, 'PHONE_FRAME_CHANGED'); assert.deepEqual(calls, ['down', 'up', 'down', 'cancel']);
+    }
+  }
+});
+
+test('a failed drag observation cancels once and persists the cancelled outcome', async t => {
+  const f = await fixture(t), calls: string[] = [];
+  const drag: PhoneDrag = { async start() { calls.push('down'); f.adb.fail = true; }, async move() {}, async end(cancel) { calls.push(cancel ? 'cancel' : 'up'); } };
+  const phone = new PhoneService(f.config, f.adb, Date.now, undefined, undefined, drag);
+  const lease_id = data(await phone.call('phone_acquire_control', {})).lease_id;
+  const frame_id = data(await phone.call('phone_observe', { ui: false, image: true })).frame_id;
+  const args = { lease_id, frame_id, request_id: 'held-capture-failed-1', phase: 'start', x: 100, y: 300 };
+  assert.equal(data(await phone.call('phone_drag', args)).error, 'ADB_FAILED_OR_TIMEOUT');
+  const replay = data(await phone.call('phone_drag', args));
+  assert.equal(replay.replayed, true); assert.equal(replay.result.status, 'cancelled');
+  assert.equal(replay.result.drag.held, false); assert.deepEqual(calls, ['down', 'cancel']);
+  assert.equal(JSON.parse(await readFile(join(f.dir, 'drag.json'), 'utf8')), null);
+});
 
 test('local phone stdio exposes phone tools with context mode and no host task surface',async t=>{
   const f=await fixture(t),path=join(f.dir,'phone.json');
@@ -610,7 +666,8 @@ test('real stdio preserves all original tools when disabled and adds the phone t
   await writeFile(configPath, '[]');
   const connect = async () => {
     const client = new Client({ name: 'stdio-optin-test', version: '1' });
-    await client.connect(new StdioClientTransport({ command: process.execPath, args: [join(process.cwd(), 'dist/src/mcp-stdio.js'), configPath], stderr: 'pipe' }));
+    await client.connect(new StdioClientTransport({ command: process.execPath,
+      args: [fileURLToPath(new URL('../../src/mcp-stdio.js', import.meta.url)), configPath], stderr: 'pipe' }));
     return client;
   };
   const first = await connect(); const baseline = (await first.listTools()).tools; const instructions = first.getInstructions(); await first.close();

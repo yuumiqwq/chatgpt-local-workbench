@@ -1,6 +1,6 @@
 # Lenovo Legion 手机模块部署与验收
 
-本模块在完整 Local Workbench 的同一个 MCP stdio 服务中增加十个工具，原有 host、workspace、Codex、DSH、Task 和持久 Work 功能保留。没有手机配置，或配置为 `{"enabled":false}` 时，工具列表与宿主说明维持原样。初始开发使用模拟设备，后续已在联想拯救者与荣耀 80 上部署；具体版本的现场结果见同目录验收文档。
+本模块在完整 Local Workbench 的同一个 MCP stdio 服务中增加十一个工具，原有 host、workspace、Codex、DSH、Task 和持久 Work 功能保留。没有手机配置，或配置为 `{"enabled":false}` 时，工具列表与宿主说明维持原样。初始开发使用模拟设备，后续已在联想拯救者与荣耀 80 上部署；具体版本的现场结果见同目录验收文档。
 
 目标主机为 Lenovo Legion R7000 2020 / 82B6，hostname 为 `LAPTOP-NHHRR3GO`。目标手机为 HONOR 80 / ANN-AN00，固定 ADB serial 为 `AYCVVB2B09005827`，预期 Android 15 / MagicOS 9，原始显示尺寸为 1080×2400。这些是部署目标资料，运行状态以现场探测为准。
 
@@ -41,7 +41,7 @@ node scripts/legion-phone-check.mjs E:\LocalWorkbenchPrivate\workspaces.json
 node scripts/legion-phone-check.mjs E:\LocalWorkbenchPrivate\workspaces.json --ui
 ```
 
-脚本核对 hostname、serial、原有代表工具与十个新增工具，执行状态、按需截图和应用列表探测。它不点击、不启动应用、不唤醒、不切换输入法，也不管理任何守护器；会启动并关闭一个短期 MCP 子进程，并更新本地观察元数据。ADB 与 uiautomator 本身仍会产生临时进程。脚本不保存截图或 XML，只输出不含屏幕内容的摘要；在 ROG 上直接拒绝运行。当前 Workbench 配置应已完成旧字段迁移，避免新建 stdio 进程触发原有配置迁移逻辑。
+脚本核对 hostname、serial、原有代表工具与十一个新增工具，执行状态、按需截图和应用列表探测。它不点击、不启动应用、不唤醒、不切换输入法，也不管理任何守护器；会启动并关闭一个短期 MCP 子进程，并更新本地观察元数据。ADB 与 uiautomator 本身仍会产生临时进程。脚本不保存截图或 XML，只输出不含屏幕内容的摘要；在 ROG 上直接拒绝运行。当前 Workbench 配置应已完成旧字段迁移，避免新建 stdio 进程触发原有配置迁移逻辑。
 
 随后通过同一 Lenovo tunnel 调用 `server_status`、`list_workspaces` 和 `phone_observe`，核实真实 tunnel 连通性。上述本地脚本通过仅证明本地 stdio 通路；现场报告应分别记录本地、tunnel、设备读操作和设备写操作的证据，不将其中一种替代其他种类。
 
@@ -55,7 +55,7 @@ node scripts/legion-phone-check.mjs E:\LocalWorkbenchPrivate\workspaces.json --u
 
 版本 `1.7.0-local.14` 将窗口与输入连接查询按原有顺序合并到一次 ADB 调用，并让 PNG 编码与末次状态读取并行完成。图像尺寸和压缩质量保持原值；工具说明仅介绍接口用法，应用操作经验暂存于本文。荣耀 80 同页交替测试中，轻量状态、控件及截图返回耗时的中位数分别约为 370、617 和 1481 毫秒，首次调用及网络、模型决策时间另计。
 
-拯救者本机及 SSH 会话使用 `legion_phone` 本地 MCP，启动命令为 Node 运行 `dist/src/phone/mcp-stdio.js`，参数为现有手机配置文件的绝对路径。此入口只注册十个手机工具，复用已有租约和手机连接，在 Codex 用户配置中登记后供新会话加载。原有完整 Workbench 和隧道继续保留，操作手机优先走本地进程。登记方式见 [OpenAI MCP 配置文档](https://learn.chatgpt.com/docs/extend/mcp?surface=cli)。
+拯救者本机及 SSH 会话使用 `legion_phone` 本地 MCP，启动命令为 Node 运行 `dist/src/phone/mcp-stdio.js`，参数为现有手机配置文件的绝对路径。此入口只注册十一个手机工具，复用已有租约和手机连接，在 Codex 用户配置中登记后供新会话加载。原有完整 Workbench 和隧道继续保留，操作手机优先走本地进程。登记方式见 [OpenAI MCP 配置文档](https://learn.chatgpt.com/docs/extend/mcp?surface=cli)。
 
 版本 `1.7.0-local.15` 增加 `phone_sequence`，调用方传入当前 `frame_id` 与 `steps`，本机连续执行最多八个动作，最后返回一次观察及逐步耗时。步骤沿用 `phone_input.action`，可以附加 `wait_for`；文字输入前自动等待输入连接就绪，`input_ready_timeout_ms` 默认 2000。需要给自绘页面留出加载时间时，可设置 `settle_ms`，范围为 0–2000 毫秒，默认不增加等待。控件等待、各次文本等待和末尾等待的配置预算合计最多 30 秒，设备命令耗时另计。
 
@@ -74,6 +74,12 @@ node scripts/legion-phone-check.mjs E:\LocalWorkbenchPrivate\workspaces.json --u
 动作后返回新的观察供 Agent 核对结果。页面切换造成焦点暂时消失时只重试读取；`completed` 表示动作已发送并取得后续观察，业务结果由实际页面确认。`1.7.0-local.9` 起，动作后的图像按上述 `observation` 规则返回，使用 `wait_for` 时同时返回条件状态。
 
 版本 `1.7.0-local.10` 会避开滚动容器上方的可点击浮层，在可用区域内保持手势方向，必要时缩短距离。使用这一路径时，`touch.avoided_overlay` 为 `true`；整个容器被遮挡时返回 `PHONE_SCROLL_AREA_OCCLUDED`，调用方可观察并处理浮层。`result.scroll_observation` 根据已有的操作前后控件数据报告 `moved`、`no_movement_observed`、`content_changed` 或 `unavailable`，确认移动时同时给出位移，不额外读取截图。`can_scroll_more` 仅表示驱动对继续滚动的判断，实际移动仍以观察结果为准。
+
+### 持续按住并观察（1.7.0-local.19）
+
+需要边拖边观察的滑块可使用 `phone_drag`。以最新 `frame_id` 和起点坐标调用 `phase:start`，保存返回的 `result.drag.id`，随后用同一连接和控制租约调用 `phase:move` 调整位置；移动后默认返回截图，手指继续按住。位置合适时用 `phase:end` 松手，放弃本次手势时用 `phase:cancel` 取消。途中仍可调用 `phone_observe`，普通点击与滚动在本次拖动结束后继续。
+
+该工具通过本机 scrcpy 5.0.1 的独立控制连接发送触摸事件，不打开投屏窗口。子进程在连接断开、租约失效或暂停时取消手势，30 秒没有拖动命令或单次拖动达到 120 秒也会取消；已有 Phone-Host 和 scrcpy 守护程序继续运行。新工具随本机 MCP 服务加载，已运行的旧连接需要重新连接以取得工具列表。
 
 ### Appium 手势与条件等待（1.7.0-local.6）
 

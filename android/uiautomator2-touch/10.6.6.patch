@@ -1,0 +1,194 @@
+diff --git a/app/build.gradle.kts b/app/build.gradle.kts
+index 5e2b419..87e5be9 100644
+--- a/app/build.gradle.kts
++++ b/app/build.gradle.kts
+@@ -36,7 +36,7 @@ val buildTime = BuildConfigField(
+
+ android {
+     namespace = "io.appium.uiautomator2.test"
+-    compileSdk = 34
++    compileSdk = 35
+     defaultConfig {
+         applicationId = "io.appium.uiautomator2"
+         minSdk = 26
+@@ -93,7 +93,7 @@ android {
+             dimension = "default"
+         }
+         create("server") {
+-            applicationId = "io.appium.uiautomator2.server"
++            applicationId = "io.appium.uiautomator2.server.touchtest"
+             dimension = "default"
+         }
+     }
+diff --git a/app/src/main/java/io/appium/uiautomator2/model/api/actions/W3CGestureModel.java b/app/src/main/java/io/appium/uiautomator2/model/api/actions/W3CGestureModel.java
+index 364c984..9aed733 100644
+--- a/app/src/main/java/io/appium/uiautomator2/model/api/actions/W3CGestureModel.java
++++ b/app/src/main/java/io/appium/uiautomator2/model/api/actions/W3CGestureModel.java
+@@ -14,6 +14,11 @@ public class W3CGestureModel extends BaseModel {
+     public String value;
+     public Double size;
+     public Double pressure;
++    public Double touchMajor;
++    public Double touchMinor;
++    public Double toolMajor;
++    public Double toolMinor;
++    public Double orientation;
+
+     public W3CGestureModel() {}
+ }
+diff --git a/app/src/main/java/io/appium/uiautomator2/model/api/actions/W3CItemParametersModel.java b/app/src/main/java/io/appium/uiautomator2/model/api/actions/W3CItemParametersModel.java
+index 6cdc449..72b53d3 100644
+--- a/app/src/main/java/io/appium/uiautomator2/model/api/actions/W3CItemParametersModel.java
++++ b/app/src/main/java/io/appium/uiautomator2/model/api/actions/W3CItemParametersModel.java
+@@ -4,6 +4,7 @@ import io.appium.uiautomator2.model.api.BaseModel;
+
+ public class W3CItemParametersModel extends BaseModel {
+     public String pointerType;
++    public Integer deviceId;
+
+     public W3CItemParametersModel() {}
+ }
+diff --git a/app/src/main/java/io/appium/uiautomator2/utils/w3c/ActionsExecutor.java b/app/src/main/java/io/appium/uiautomator2/utils/w3c/ActionsExecutor.java
+index 5201381..152d82e 100644
+--- a/app/src/main/java/io/appium/uiautomator2/utils/w3c/ActionsExecutor.java
++++ b/app/src/main/java/io/appium/uiautomator2/utils/w3c/ActionsExecutor.java
+@@ -196,6 +196,10 @@ public class ActionsExecutor {
+         final MotionEvent.PointerCoords[] nonHoveringCoords = filterPointerCoordinates(events, false);
+         final MotionEvent.PointerCoords[] hoveringCoords = filterPointerCoordinates(events, true);
+         final int inputSource = extractInputSource(events);
++        final int deviceId = events.isEmpty() ? 0 : events.get(0).deviceId;
++        if (events.stream().anyMatch(event -> event.deviceId != deviceId)) {
++            throw new InvalidArgumentException("All pointers in one event must use the same deviceId");
++        }
+         final int metaState = metaKeysToState(depressedMetaKeys);
+         int pointersCount = getInitialPointersCount(events);
+         boolean result = true;
+@@ -212,7 +216,7 @@ public class ActionsExecutor {
+                             : getPointerAction(MotionEvent.ACTION_POINTER_DOWN, event.properties.id);
+                     synthesizedEvent = MotionEvent.obtain(downTime, eventTime, action, pointersCount,
+                             nonHoveringProps, nonHoveringCoords,
+-                            metaState, event.button, 1, 1, 0, 0, inputSource, 0);
++                            metaState, event.button, 1, 1, deviceId, 0, inputSource, 0);
+                 }
+                 break;
+                 case MotionEvent.ACTION_UP: {
+@@ -221,7 +225,7 @@ public class ActionsExecutor {
+                             : getPointerAction(MotionEvent.ACTION_POINTER_UP, event.properties.id);
+                     synthesizedEvent = MotionEvent.obtain(downTime, eventTime, action, pointersCount--,
+                             nonHoveringProps, nonHoveringCoords,
+-                            metaState, event.button, 1, 1, 0, 0, inputSource, 0);
++                            metaState, event.button, 1, 1, deviceId, 0, inputSource, 0);
+                 }
+                 break;
+                 case MotionEvent.ACTION_MOVE: {
+@@ -230,7 +234,7 @@ public class ActionsExecutor {
+                     }
+                     synthesizedEvent = MotionEvent.obtain(downTime, eventTime, actionCode, pointersCount,
+                             nonHoveringProps, nonHoveringCoords,
+-                            metaState, event.button, 1, 1, 0, 0, inputSource, 0);
++                            metaState, event.button, 1, 1, deviceId, 0, inputSource, 0);
+                     isMoveActionTriggered = true;
+                 }
+                 break;
+@@ -239,7 +243,7 @@ public class ActionsExecutor {
+                 case MotionEvent.ACTION_HOVER_MOVE: {
+                     synthesizedEvent = MotionEvent.obtain(downTime, eventTime, actionCode, 1,
+                             hoveringProps, hoveringCoords,
+-                            metaState, 0, 1, 1, 0, 0, inputSource, 0);
++                            metaState, 0, 1, 1, deviceId, 0, inputSource, 0);
+                 }
+                 break;
+                 default:
+diff --git a/app/src/main/java/io/appium/uiautomator2/utils/w3c/ActionsTokenizer.java b/app/src/main/java/io/appium/uiautomator2/utils/w3c/ActionsTokenizer.java
+index 221f4de..ba7e942 100644
+--- a/app/src/main/java/io/appium/uiautomator2/utils/w3c/ActionsTokenizer.java
++++ b/app/src/main/java/io/appium/uiautomator2/utils/w3c/ActionsTokenizer.java
+@@ -60,6 +60,7 @@ import static io.appium.uiautomator2.utils.w3c.ActionsConstants.POINTER_TYPE_TOU
+
+ public class ActionsTokenizer {
+     private ActionTokens tokenizedActions;
++    private int currentDeviceId;
+
+     private static long alignDuration(long ms) {
+         if (ms <= 0) {
+@@ -265,6 +266,11 @@ public class ActionsTokenizer {
+         final MotionEvent.PointerCoords result = new MotionEvent.PointerCoords();
+         result.size = gesture.size == null ? 1 : gesture.size.floatValue();
+         result.pressure = gesture.pressure == null ? 1 : gesture.pressure.floatValue();
++        result.touchMajor = gesture.touchMajor == null ? 0 : gesture.touchMajor.floatValue();
++        result.touchMinor = gesture.touchMinor == null ? 0 : gesture.touchMinor.floatValue();
++        result.toolMajor = gesture.toolMajor == null ? 0 : gesture.toolMajor.floatValue();
++        result.toolMinor = gesture.toolMinor == null ? 0 : gesture.toolMinor.floatValue();
++        result.orientation = gesture.orientation == null ? 0 : gesture.orientation.floatValue();
+         if (origin instanceof String) {
+             if (origin.equals(ACTION_ITEM_ORIGIN_VIEWPORT)) {
+                 if (gesture.x == null || gesture.y == null) {
+@@ -305,6 +311,7 @@ public class ActionsTokenizer {
+     private void recordEventParams(long timeDeltaMs, @Nullable final InputEventParams newParam) {
+         if (newParam instanceof MotionInputEventParams) {
+             final MotionInputEventParams motionParams = (MotionInputEventParams) newParam;
++            motionParams.deviceId = currentDeviceId;
+             if (motionParams.actionCode == MotionEvent.ACTION_UP
+                     || motionParams.actionCode == MotionEvent.ACTION_DOWN
+                     || motionParams.actionCode == MotionEvent.ACTION_MOVE) {
+@@ -407,6 +414,7 @@ public class ActionsTokenizer {
+     }
+
+     private void applyPointerActionToEventsMapping(final W3CItemModel item, final int pointerIndex) {
++        currentDeviceId = item.parameters != null && item.parameters.deviceId != null ? item.parameters.deviceId : 0;
+         final String actionId = item.id;
+         final MotionEvent.PointerProperties props = new MotionEvent.PointerProperties();
+         props.id = pointerIndex;
+@@ -512,8 +520,17 @@ public class ActionsTokenizer {
+
+                     for (long step = 2; step <= stepsCount; step++) {
+                         final MotionEvent.PointerCoords currentCoordinates = new MotionEvent.PointerCoords();
++                        currentCoordinates.copyFrom(startCoordinates);
+                         currentCoordinates.x = startCoordinates.x + (endCoordinates.x - startCoordinates.x) / stepsCount * step;
+                         currentCoordinates.y = startCoordinates.y + (endCoordinates.y - startCoordinates.y) / stepsCount * step;
++                        float fraction = (float) step / stepsCount;
++                        currentCoordinates.pressure += (endCoordinates.pressure - startCoordinates.pressure) * fraction;
++                        currentCoordinates.size += (endCoordinates.size - startCoordinates.size) * fraction;
++                        currentCoordinates.touchMajor += (endCoordinates.touchMajor - startCoordinates.touchMajor) * fraction;
++                        currentCoordinates.touchMinor += (endCoordinates.touchMinor - startCoordinates.touchMinor) * fraction;
++                        currentCoordinates.toolMajor += (endCoordinates.toolMajor - startCoordinates.toolMajor) * fraction;
++                        currentCoordinates.toolMinor += (endCoordinates.toolMinor - startCoordinates.toolMinor) * fraction;
++                        currentCoordinates.orientation += (endCoordinates.orientation - startCoordinates.orientation) * fraction;
+                         if (step == stepsCount && isHovering) {
+                             recordEventParams(timeDelta, new MotionInputEventParams(
+                                     firstActionDelta, MotionEvent.ACTION_HOVER_EXIT, endCoordinates, 0, props));
+diff --git a/app/src/main/java/io/appium/uiautomator2/utils/w3c/MotionInputEventParams.java b/app/src/main/java/io/appium/uiautomator2/utils/w3c/MotionInputEventParams.java
+index 6cd86cf..205f39b 100644
+--- a/app/src/main/java/io/appium/uiautomator2/utils/w3c/MotionInputEventParams.java
++++ b/app/src/main/java/io/appium/uiautomator2/utils/w3c/MotionInputEventParams.java
+@@ -23,6 +23,7 @@ public class MotionInputEventParams extends InputEventParams {
+     public MotionEvent.PointerCoords coordinates;
+     public int actionCode;
+     public int button;
++    public int deviceId;
+
+     public MotionInputEventParams(long startDelta, int actionCode, MotionEvent.PointerCoords coordinates,
+                                   int button, MotionEvent.PointerProperties properties) {
+diff --git a/build.gradle.kts b/build.gradle.kts
+index 56655d0..f02c016 100644
+--- a/build.gradle.kts
++++ b/build.gradle.kts
+@@ -2,10 +2,16 @@ plugins {
+     alias(libs.plugins.android.application) apply false
+ }
+
++subprojects {
++    tasks.withType<JavaCompile>().configureEach {
++        options.encoding = "UTF-8"
++    }
++}
++
+ tasks.register("clean", Delete::class).configure {
+     dependsOn(":vendor-xpath2:cleanXpath2Jar")
+     delete(
+         rootProject.layout.buildDirectory,
+         rootProject.layout.projectDirectory.file("apks")
+     )
+-}
+\ No newline at end of file
++}

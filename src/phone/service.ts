@@ -17,6 +17,7 @@ import { inputFocusProof } from './focus.js';
 import { imageFallbackReason } from './observation.js';
 import { parseDisplayContext, parseWindowOwner, type DisplayContext, type PhoneContext } from './context.js';
 import { PhoneDiagnostics, compactResponse, responseBody } from './diagnostics.js';
+import { DragWorker, type PhoneDrag } from './drag.js';
 
 const id = z.string().regex(/^[A-Za-z0-9_-]{16,128}$/);
 const pkg = z.string().regex(/^[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)+$/).max(200);
@@ -45,6 +46,9 @@ export const phoneSchemas = {
   phone_list_apps: z.object({ search: z.string().max(100).default(''), offset: z.number().int().min(0).max(10000).default(0), limit: z.number().int().min(1).max(100).default(50), refresh: z.boolean().default(false) }).strict(),
   phone_open_app: z.object({ ...auth, ...responseOptions, package: pkg, wait_for: waitFor.optional(), observation: observationMode }).strict(),
   phone_input: z.object({ ...auth, ...responseOptions, frame_id: id, wait_for: waitFor.optional(), observation: observationMode, action: phoneAction }).strict(),
+  phone_drag: z.object({ ...auth, ...responseOptions, phase: z.enum(['start', 'move', 'end', 'cancel']),
+    frame_id: id.optional(), drag_id: id.optional(), x: point.optional(), y: point.optional(),
+    duration_ms: z.number().int().min(40).max(2000).default(180), observation: observationMode.default('image') }).strict(),
   phone_sequence: z.object({ ...auth, ...responseOptions, frame_id: id,
     steps: z.array(z.object({ action: phoneAction, wait_for: waitFor.optional(), settle_after_ms: z.number().int().min(0).max(2000).optional() }).strict()).min(1).max(8)
       .refine(steps => steps.reduce((total, step) => total + (step.wait_for?.timeout_ms ?? 0), 0) <= 30000),
@@ -57,6 +61,7 @@ export type PhoneTool = keyof typeof phoneSchemas;
 type Lease = { hash: string; expires: number; epoch: string };
 const leaseSchema = z.object({ hash: z.string().regex(/^[a-f0-9]{64}$/), expires: z.number().finite().nonnegative(), epoch: z.string().min(1) }).strict();
 type Frame = { frame_id: string; timestamp: string; at: number; package: string | null; window: string; rotation: number; width: number; height: number; targets?: { id: string; point: [number, number] }[]; input_focus?: string; context_only?: true };
+type SequenceContext = { candidate?: { frame_id: string; context: PhoneContext; checked_at: number } };
 type Request = { fingerprint: string; lease_hash: string; state: 'pending' | 'completed'; result?: unknown };
 const json = (value: unknown): CallToolResult => ({ content: [{ type: 'text', text: JSON.stringify(value) }] });
 const phoneError = (e: unknown) => e instanceof Error && /^PHONE_[A-Z_]+$|^ADB_FAILED_OR_TIMEOUT$/.test(e.message) ? e.message : 'PHONE_INVALID_REQUEST_OR_STATE';
@@ -71,13 +76,15 @@ export class PhoneService {
   private diagnostics: PhoneDiagnostics;
   private apps: { at: number; packages: string[] } | undefined;
   private faults: { at: string; code: string }[] = [];
+  private held: { id: string; lease_hash: string; context: PhoneContext; started: number } | undefined;
   private fault(code: string) {
     this.faults.push({ at: new Date(this.now()).toISOString(), code });
     this.faults = this.faults.slice(-20);
   }
   constructor(readonly config: PhoneConfig, private adb: Adb, private now = Date.now,
     private panel: PhonePanel | undefined = config.scrcpy_path ? new ScrcpyPanel(config) : undefined,
-    private automation: PhoneAutomation | undefined = config.appium_url ? new AppiumAutomation(config) : undefined) {
+    private automation: PhoneAutomation | undefined = config.appium_url ? new AppiumAutomation(config) : undefined,
+    private drag: PhoneDrag | undefined = config.scrcpy_path ? new DragWorker(config) : undefined) {
     this.store = new PhoneStore(config.state_dir); this.diagnostics = new PhoneDiagnostics(config.state_dir);
   }
   private async shell(...args: string[]) { return (await this.adb.run(['shell', ...args])).toString('utf8'); }
@@ -101,6 +108,81 @@ export class PhoneService {
     return lease;
   }
   private async renew(key: string) { const lease = await this.lease(key); await this.store.save('lease.json', { ...lease, expires: this.now() + this.config.lease_seconds * 1000 }); }
+  private async finishDrag(cancel: boolean) {
+    const held = this.held;
+    try { await this.drag?.end(cancel); }
+    finally {
+      this.held = undefined;
+      const marker = await this.store.read<{ id: string }>('drag.json');
+      if (held && marker?.id === held.id) await this.store.save('drag.json', null);
+    }
+  }
+  private async assertNoDrag() {
+    const marker = await this.store.read<{ id: string; expires: number }>('drag.json');
+    if (!marker) return;
+    if (marker.expires > this.now()) throw new Error('PHONE_DRAG_ACTIVE');
+    if (this.held?.id === marker.id) await this.finishDrag(true);
+    else {
+      // The detached watchdog checks every 500 ms; allow it to finish cancellation.
+      await delay(600); await this.store.save('drag.json', null);
+    }
+  }
+  private async dragInput(args: z.infer<typeof phoneSchemas.phone_drag>) {
+    const key = args.lease_id, file = `request-${digest(args.request_id)}.json`;
+    const fingerprint = createHmac('sha256', key).update(JSON.stringify({ name: 'phone_drag', ...args, lease_id: undefined, response_detail: undefined })).digest('hex');
+    const previous = await this.store.read<Request>(file);
+    if (previous) {
+      if (previous.lease_hash !== digest(key) || previous.fingerprint !== fingerprint) throw new Error('PHONE_REQUEST_CONFLICT');
+      return json({ replayed: true, result: previous.result, status: previous.state === 'pending' ? 'outcome_unknown' : 'completed', observation: 'not_replayed' });
+    }
+    return this.controlled(key, async () => {
+      if (!this.drag) throw new Error('PHONE_DRAG_NOT_CONFIGURED');
+      if (await this.store.read(file)) throw new Error('PHONE_REQUEST_RETRY');
+      if ((await readdir(this.store.dir)).filter(n => n.startsWith('request-')).length >= 10000) throw new Error('PHONE_JOURNAL_FULL');
+      const starting = args.phase === 'start', ending = args.phase === 'end' || args.phase === 'cancel';
+      if (!ending && (args.x === undefined || args.y === undefined)) throw new Error('PHONE_DRAG_POINT_REQUIRED');
+      if (starting) {
+        await this.assertNoDrag();
+        const frame = await this.store.read<Frame>('frame.json');
+        if (!frame || frame.frame_id !== args.frame_id || this.now() - frame.at > this.config.frame_seconds * 1000) throw new Error('PHONE_FRAME_EXPIRED');
+        const current = await this.context();
+        if (current.window !== frame.window || current.package !== frame.package || current.width !== frame.width || current.height !== frame.height || current.rotation !== frame.rotation) throw new Error('PHONE_FRAME_CHANGED');
+        this.held = { id: token(), lease_hash: digest(key), context: current, started: this.now() };
+      } else if (!this.held || this.held.id !== args.drag_id || this.held.lease_hash !== digest(key)) throw new Error('PHONE_DRAG_NOT_ACTIVE');
+      const held = this.held!;
+      try {
+        if (!starting && args.phase !== 'cancel') {
+          const current = await this.context();
+          if (JSON.stringify(current) !== JSON.stringify(held.context)) throw new Error('PHONE_FRAME_CHANGED');
+        }
+        if (!ending && (args.x! >= held.context.width || args.y! >= held.context.height)) throw new Error('PHONE_COORDINATES_OUTSIDE_FRAME');
+        await this.store.save(file, { fingerprint, lease_hash: digest(key), state: 'pending' });
+        await this.lease(key);
+        if (starting) await this.drag.start(held.context, { x: args.x!, y: args.y! }, digest(key), (await this.lease(key)).epoch, held.id);
+        else if (!ending) await this.drag.move({ x: args.x!, y: args.y! }, args.duration_ms);
+        if (ending) await this.finishDrag(args.phase === 'cancel');
+        const expires = Math.min(this.now() + 30000, held.started + 120000);
+        if (!ending) await this.store.save('drag.json', { id: held.id, lease_hash: held.lease_hash, expires });
+        await delay(60);
+        const result = { status: 'completed', request_sent: true, request_id: args.request_id,
+          drag: { id: held.id, held: !ending, phase: args.phase, ...(ending ? {} : { expires_at: new Date(expires).toISOString() }) },
+          touch: { backend: 'scrcpy', method: 'continuous_touch' } };
+        // Commit the write receipt before observation, so a capture error does not replay input.
+        await this.store.save(file, { fingerprint, lease_hash: digest(key), state: 'completed', result });
+        const observation = args.observation === 'context' ? await this.captureContext()
+          : await this.capture(args.observation === 'ui' || args.observation === 'auto', args.observation === 'auto' ? 'auto' : args.observation === 'image');
+        return this.observation(observation, result);
+      } catch (e) {
+        await this.finishDrag(true).catch(() => {});
+        const receipt = await this.store.read<Request>(file);
+        if (receipt) await this.store.save(file, { ...receipt, state: 'completed', result: {
+          status: receipt.state === 'pending' ? 'outcome_unknown' : 'cancelled', error: phoneError(e),
+          request_id: args.request_id, drag: { id: held.id, held: false, phase: 'cancel' }
+        } });
+        throw e;
+      }
+    });
+  }
   private async controlled<T>(key: string, operation: () => Promise<T>) {
     return this.store.lock(async () => {
       await this.renew(key);
@@ -145,7 +227,7 @@ export class PhoneService {
     if (!before && JSON.stringify(parseDisplayContext(parts[0]!)) !== JSON.stringify(afterParsed)) throw new Error('PHONE_FRAME_CHANGED_DURING_CAPTURE');
     const after = await this.resolveContext(afterParsed);
     if (before && JSON.stringify(before) !== JSON.stringify(after)) throw new Error('PHONE_FRAME_CHANGED_DURING_CAPTURE');
-    return { after, focus: inputFocusProof(parts.at(-2)!, after.package) };
+    return { after, focus: inputFocusProof(parts.at(-2)!, after.package), checked_at: performance.now() };
   }
   private async readUi(context: Awaited<ReturnType<PhoneService['context']>>) {
     const raw = this.automation ? await this.automation.source() : (await this.adb.run(['exec-out', 'uiautomator', 'dump', '/dev/tty'])).toString('utf8');
@@ -175,7 +257,7 @@ export class PhoneService {
       return { status: 'unavailable', error: 'PHONE_IME_PREPARATION_FAILED' };
     }
   }
-  private async capture(ui: boolean, image: boolean | 'auto' = true): Promise<{ frame: Frame; png?: Buffer; ui: unknown; rendered: { width: number; height: number } | null; semantic?: UiSnapshot; reason?: string }> {
+  private async capture(ui: boolean, image: boolean | 'auto' = true): Promise<{ frame: Frame; context_checked_at: number; png?: Buffer; ui: unknown; rendered: { width: number; height: number } | null; semantic?: UiSnapshot; reason?: string }> {
     if (!ui && !image) throw new Error('PHONE_OBSERVATION_REQUIRED');
     const before = await this.context();
     let fresh: Awaited<ReturnType<PhoneService['readUi']>> | undefined;
@@ -205,10 +287,10 @@ export class PhoneService {
     });
     if (image === false || (image === 'auto' && !reason)) {
       if (!fresh) throw new Error('PHONE_UI_DUMP_FAILED');
-      const capturedAt = this.now(), {focus, after} = await this.contextAndFocus(before);
+      const capturedAt = this.now(), {focus, after, checked_at} = await this.contextAndFocus(before);
       const frame: Frame = { ...after, frame_id: token(), timestamp: new Date(capturedAt).toISOString(), at: capturedAt, ...(targets ? {targets} : {}), ...(focus ? {input_focus:focus} : {}) };
       await this.store.save('frame.json', frame);
-      return { frame, ui: uiResult, semantic: fresh.snapshot, rendered: null, reason: image === 'auto' ? 'ui_sufficient' : 'requested_ui' };
+      return { frame, context_checked_at: checked_at, ui: uiResult, semantic: fresh.snapshot, rendered: null, reason: image === 'auto' ? 'ui_sufficient' : 'requested_ui' };
     }
     const png = await this.adb.run(['exec-out', 'screencap', '-p']);
     const capturedAt = this.now();
@@ -229,20 +311,20 @@ export class PhoneService {
     const [contextResult, imageResult] = results;
     if (contextResult.status === 'rejected') throw contextResult.reason;
     if (imageResult.status === 'rejected') throw imageResult.reason;
-    const {focus, after} = contextResult.value, rendered = imageResult.value;
+    const {focus, after, checked_at} = contextResult.value, rendered = imageResult.value;
     const frame: Frame = { ...after, frame_id: token(), timestamp: new Date(capturedAt).toISOString(), at: capturedAt, width, height,
       ...(targets ? {targets} : {}), ...(focus ? {input_focus:focus} : {}) };
     if (rendered.data.length > 3 * 1024 * 1024 || Buffer.byteLength(JSON.stringify(uiResult)) > 512 * 1024) throw new Error('PHONE_OBSERVATION_TOO_LARGE');
     await this.store.save('frame.json', frame);
-    return { frame, png: rendered.data, ui: uiResult, ...(semantic ? { semantic } : {}), rendered: { width: rendered.info.width, height: rendered.info.height }, reason: reason ?? 'requested_image' };
+    return { frame, context_checked_at: checked_at, png: rendered.data, ui: uiResult, ...(semantic ? { semantic } : {}), rendered: { width: rendered.info.width, height: rendered.info.height }, reason: reason ?? 'requested_image' };
   }
   private async captureContext(): Promise<Awaited<ReturnType<PhoneService['capture']>>> {
-    const {focus, after} = await this.contextAndFocus();
+    const {focus, after, checked_at} = await this.contextAndFocus();
     const at = this.now();
     const frame: Frame = { ...after, at, timestamp: new Date(at).toISOString(), frame_id: token(),
       context_only: true, ...(focus ? {input_focus: focus} : {}) };
     await this.store.save('frame.json', frame);
-    return { frame, ui: {status:'not_requested'}, rendered: null, reason:'requested_context' };
+    return { frame, context_checked_at: checked_at, ui: {status:'not_requested'}, rendered: null, reason:'requested_context' };
   }
   private async waitUntil(condition: z.infer<typeof waitFor>, image: boolean) {
     const start = performance.now(), deadline = start + condition.timeout_ms;
@@ -300,6 +382,7 @@ export class PhoneService {
     return { hostname: hostname(), service_version: VERSION, phone_protocol_version: '1', input_validation_version: 'context-only-v4', capabilities: Object.keys(phoneSchemas),
       semantic_input: { observe: { ui: true, image: false }, action: 'tap_element', target: 'element_id from fresh ui.elements; identify by text/resource_id/description', post_action_observation_retries: 2,
         touch_backend: this.automation ? 'appium_uiautomator2' : 'adb', condition_wait: true,
+        continuous_drag: !!this.drag,
         scroll_backend: this.automation?.resolveScrollTarget ? 'innermost_scrollable_then_touch' : 'touch',
         scroll_variation: { duration_percent: 8, native_distance_percent: 3, added_pause_ms: 0 },
         post_action_observation: 'auto_ui_with_image_fallback' },
@@ -389,6 +472,7 @@ export class PhoneService {
         }
       };
       let finalResponse: CallToolResult | undefined;
+      const sequenceContext: SequenceContext = {};
       for (const [index, step] of args.steps.entries()) {
         result.active_step = index;
         // Persist the next index before any input. A crashed sequence is reported,
@@ -414,7 +498,7 @@ export class PhoneService {
             try {
               response = await this.write('phone_input', phoneSchemas.phone_input.parse({ lease_id: key,
                 request_id: childRequestId, frame_id: frame.frame_id,
-                action: step.action, wait_for: step.wait_for, observation: mode }), true);
+                action: step.action, wait_for: step.wait_for, observation: mode }), true, sequenceContext);
               break;
             } catch (e) {
               const previousAction = args.steps[index - 1]?.action.type;
@@ -460,6 +544,7 @@ export class PhoneService {
             if (!nextFrame || nextFrame.frame_id !== body.frame_id) throw new Error('PHONE_SEQUENCE_RESULT_INVALID');
             frame = nextFrame;
             if (step.settle_after_ms) {
+              delete sequenceContext.candidate;
               await delay(step.settle_after_ms);
               progress.settle_after_ms = step.settle_after_ms;
               await this.lease(key);
@@ -501,7 +586,7 @@ export class PhoneService {
       return { content: [{ type: 'text', text: JSON.stringify({ ...JSON.parse(first.text), result }) }, ...finalResponse.content.slice(1)] };
     });
   }
-  private async write(name: PhoneTool, args: Record<string, unknown>, lockHeld = false) {
+  private async write(name: PhoneTool, args: Record<string, unknown>, lockHeld = false, sequenceContext?: SequenceContext) {
     const started = performance.now();
     if (args.observation === 'context' && args.wait_for) throw new Error('PHONE_CONTEXT_WAIT_UNSUPPORTED');
     const key = args.lease_id as string, requestId = args.request_id as string;
@@ -516,6 +601,7 @@ export class PhoneService {
         result: previous.result, observation: 'not_replayed; call phone_observe for a fresh frame' });
     }
     const operation = async () => {
+      await this.assertNoDrag();
       if ((await readdir(this.store.dir)).filter(n => n.startsWith('request-')).length >= 10000) throw new Error('PHONE_JOURNAL_FULL');
       // The lock serializes reads as well as writes to the device and the journal.
       if (await this.store.read(file)) throw new Error('PHONE_REQUEST_RETRY');
@@ -531,6 +617,7 @@ export class PhoneService {
       let scrollAvoidedOverlay = false;
       let turnPanelOff = false;
       let inputValidation: 'observed_ui_target' | 'fresh_input_connection' | 'fresh_context' | undefined;
+      let contextReused = false;
       if (name === 'phone_input') {
         const input = phoneSchemas.phone_input.parse(args);
         const expected = await this.store.read<Frame>('frame.json');
@@ -538,10 +625,16 @@ export class PhoneService {
         const a = input.action;
         const scrollDuration = a.type === 'scroll' ? varyScrollDuration(a.duration_ms) : undefined;
         if ('x' in a && (a.x >= expected.width || a.y >= expected.height || ('to_x' in a && (a.to_x >= expected.width || a.to_y >= expected.height)))) throw new Error('PHONE_COORDINATES_OUTSIDE_FRAME');
+        // Only the immediately preceding observation in this locked sequence can
+        // supply context. Explicit settling clears it; text still checks live focus.
+        const candidate = sequenceContext?.candidate;
+        if (sequenceContext) delete sequenceContext.candidate;
+        const age = candidate ? performance.now() - candidate.checked_at : Infinity;
+        contextReused = lockHeld && candidate?.frame_id === expected.frame_id && age >= 0 && age <= 250;
+        const current = contextReused ? candidate!.context : await this.context();
+        if (this.now() - expected.at > this.config.frame_seconds * 1000) throw new Error('PHONE_FRAME_EXPIRED');
+        if (current.window !== expected.window || current.package !== expected.package || current.rotation !== expected.rotation || current.width !== expected.width || current.height !== expected.height) throw new Error('PHONE_FRAME_CHANGED');
         if (a.type === 'tap_element') {
-          const before = await this.context();
-          if (['window', 'package', 'rotation', 'width', 'height'].some(k => before[k as keyof typeof before] !== expected[k as keyof Frame])) throw new Error('PHONE_FRAME_CHANGED');
-          if (this.now() - expected.at > this.config.frame_seconds * 1000) throw new Error('PHONE_FRAME_EXPIRED');
           const targets = expected.targets?.filter(target => target.id === a.element_id);
           if (!targets || targets.length !== 1) throw new Error('PHONE_UI_TARGET_UNKNOWN_OR_AMBIGUOUS');
           const target = targets[0]!.point;
@@ -549,9 +642,6 @@ export class PhoneService {
           if (this.automation) gesture = touchGesture(target);
           else command = ['input', 'tap', String(target[0]), String(target[1])];
         } else {
-          const current = await this.context();
-          if (this.now() - expected.at > this.config.frame_seconds * 1000) throw new Error('PHONE_FRAME_EXPIRED');
-          if (current.window !== expected.window || current.package !== expected.package || current.rotation !== expected.rotation || current.width !== expected.width || current.height !== expected.height) throw new Error('PHONE_FRAME_CHANGED');
           inputValidation = 'fresh_context';
           if (a.type === 'text') {
             if (!expected.input_focus || expected.input_focus !== (await this.contextAndFocus(current)).focus) throw new Error('PHONE_UI_TEXT_FOCUS_CHANGED');
@@ -682,8 +772,13 @@ export class PhoneService {
           }
         }
         if (!observation) throw new Error('PHONE_SCREENSHOT_FAILED');
+        if (sequenceContext && observation.frame.package) {
+          const { frame_id, package: packageName, window, rotation, width, height } = observation.frame;
+          sequenceContext.candidate = { frame_id, context: { package: packageName, window, rotation, width, height }, checked_at: observation.context_checked_at };
+        }
         const result = { status: 'completed', request_id: requestId, request_sent: true,
           input_validation: inputValidation,
+          ...(contextReused ? { context_reused: true } : {}),
           touch: gesture ? gesture.scroll
             ? { backend: 'appium_uiautomator2', method: 'scrollGesture', direction: gesture.scroll.direction,
                 percent: gesture.scroll.percent, speed: gesture.scroll.speed, planned_duration_ms: gesture.duration_ms, can_scroll_more: touchResult?.can_scroll_more }
@@ -723,6 +818,7 @@ export class PhoneService {
   private async dispatch(name: PhoneTool, raw: unknown): Promise<CallToolResult> {
     try {
       const args = phoneSchemas[name].parse(raw) as Record<string, unknown>;
+      if (name === 'phone_drag') return await this.dragInput(phoneSchemas.phone_drag.parse(args));
       if (name === 'phone_sequence') return await this.sequence(phoneSchemas.phone_sequence.parse(args));
       if (['phone_input', 'phone_open_app', 'phone_display', 'phone_recover'].includes(name)) return await this.write(name, args);
       return await this.store.lock(async () => {
@@ -738,7 +834,10 @@ export class PhoneService {
         if (name === 'phone_list_apps') return this.listApps(phoneSchemas.phone_list_apps.parse(args));
         if (name === 'phone_release_control') {
           const current = await this.readLease();
-          if (current?.hash === digest(args.lease_id as string)) await this.store.save('lease.json', null);
+          if (current?.hash === digest(args.lease_id as string)) {
+            if (this.held?.lease_hash === current.hash) await this.finishDrag(true);
+            await this.store.save('lease.json', null);
+          }
           return json({ released: true });
         }
         if (await this.store.paused()) throw new Error('PHONE_ADMIN_PAUSED');

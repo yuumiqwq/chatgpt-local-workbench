@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve, relative } from 'node:path';
 import { createHmac } from 'node:crypto';
 import test, { type TestContext } from 'node:test';
+import { setTimeout as delay } from 'node:timers/promises';
 import sharp from 'sharp';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import type { Adb } from '../../src/phone/adb.js';
@@ -139,6 +140,52 @@ test('the stable text fast path adds no readiness polls', async t => {
   assert.equal(body.result.status, 'completed');
   assert.equal(body.result.steps[1].input_wait.attempts, 0);
   assert.equal(f.adb.writes.length, 3);
+});
+
+test('adjacent sequence steps reuse the last observation context while text still checks its connection', async t => {
+  const f = await fixture(t);
+  const body = decode(await f.phone.call('phone_sequence', { ...f.args, observation: 'context' }));
+  assert.equal(body.result.status, 'completed');
+  assert.deepEqual(body.result.steps.map((s: any) => !!s.result.context_reused), [false, true, true]);
+  assert.equal(f.adb.calls.filter(c => c[1] === 'dumpsys window displays; wm size').length, 1);
+  assert.equal(f.adb.calls.filter(c => c[1]?.startsWith('dumpsys input_method; echo')).length, 1);
+  assert.equal(f.adb.writes.length, 3);
+  assert.equal(f.adb.calls.filter(c => c.includes('screencap')).length, 0);
+});
+
+test('context reuse is confined to one sequence and its first input always observes the current window', async t => {
+  const f = await fixture(t);
+  const args = { ...f.args, observation: 'context', steps: [f.args.steps[0]!, f.args.steps[2]!] };
+  assert.equal(decode(await f.phone.call('phone_sequence', args)).result.status, 'completed');
+  const frame = await f.phone.store.read<any>('frame.json');
+  f.adb.window = 'different-window';
+  const body = decode(await f.phone.call('phone_sequence', { ...args, request_id: 'sequence-request-0002', frame_id: frame.frame_id }));
+  assert.equal(body.result.error, 'PHONE_FRAME_CHANGED'); assert.equal(body.result.completed_steps, 0);
+  assert.equal(f.adb.writes.length, 2);
+});
+
+test('explicit settling discards context reuse even for a short wait', async t => {
+  const f = await fixture(t);
+  const body = decode(await f.phone.call('phone_sequence', { ...f.args, observation: 'context', steps: [
+    { action: f.args.steps[0]!.action, settle_after_ms: 10 }, f.args.steps[2]!
+  ] }));
+  assert.equal(body.result.status, 'completed');
+  assert.ok(body.result.steps.every((s: any) => !s.result.context_reused));
+  assert.equal(f.adb.calls.filter(c => c[1] === 'dumpsys window displays; wm size').length, 2);
+});
+
+test('delayed handoff refreshes the context and catches a window change before the next input', async t => {
+  const f = await fixture(t), save = f.phone.store.save.bind(f.phone.store);
+  const child = `request-${digest(digest(`phone_sequence:${f.args.request_id}:0`))}.json`;
+  f.phone.store.save = async (file, value) => {
+    await save(file, value);
+    if (file === child && (value as {state?: string}).state === 'completed') {
+      await delay(300); f.adb.window = 'different-window';
+    }
+  };
+  const body = decode(await f.phone.call('phone_sequence', { ...f.args, observation: 'context', steps: [f.args.steps[0]!, f.args.steps[2]!] }));
+  assert.equal(body.result.error, 'PHONE_FRAME_CHANGED'); assert.equal(body.result.completed_steps, 1);
+  assert.equal(f.adb.writes.length, 1);
 });
 
 test('a connection race following a key instead of a tap still stops text', async t => {
