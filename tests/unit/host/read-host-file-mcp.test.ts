@@ -3,11 +3,12 @@ import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { CallToolResultSchema, type JSONRPCMessage } from "@modelcontextprotocol/sdk/types.js";
 
-test("read_host_file preserves complete text results through stdio JSON-RPC", async t => {
+test("read_host_file preserves identical structured and text pages through stdio JSON-RPC", async t => {
   const scratch = resolve("codex-generated/read-host-file-tests");
   await mkdir(scratch, { recursive: true });
   const root = await mkdtemp(join(scratch, "case-"));
@@ -28,7 +29,7 @@ test("read_host_file preserves complete text results through stdio JSON-RPC", as
   ];
   for (const fixture of fixtures) await writeFile(join(root, fixture.name), fixture.bytes);
   const transport = new StdioClientTransport({ command: process.execPath,
-    args: [resolve("dist/src/mcp-stdio.js"), configPath], stderr: "pipe" });
+    args: [fileURLToPath(new URL("../../../src/mcp-stdio.js", import.meta.url)), configPath], stderr: "pipe" });
   await client.connect(transport);
   const wire: JSONRPCMessage[] = [];
   const receive = transport.onmessage;
@@ -50,6 +51,7 @@ test("read_host_file preserves complete text results through stdio JSON-RPC", as
       assert.equal(block.type, "text");
       assert.ok(block.type === "text");
       const body = JSON.parse(block.text);
+      assert.deepEqual(result.structuredContent, body);
       const envelope = wire.at(-1)!;
       assert.ok("result" in envelope);
       assert.deepEqual(envelope.result, result);
@@ -82,6 +84,7 @@ test("read_host_file preserves complete text results through stdio JSON-RPC", as
       const block = result.content[0]!;
       assert.ok(block.type === "text");
       const body = JSON.parse(block.text);
+      assert.deepEqual(result.structuredContent, body);
       assert.equal(body.path, join(root, fixture.name));
       assert.deepEqual(Buffer.from(body.content, fixture.encoding as BufferEncoding),
         fixture.bytes.subarray(0, body.next_offset));

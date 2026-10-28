@@ -174,7 +174,11 @@ export function registerHostTools(
       encoding: z.enum(["utf8", "base64"]).optional(),
       include_sha256: z.boolean().optional().default(false) }, annotations: readOnly
   }, ({ path, offset, max_bytes, encoding, include_sha256 }) => safe("read", { path },
-    () => files.read(path, offset, max_bytes, encoding, include_sha256)));
+    () => files.read(path, offset, max_bytes, encoding, include_sha256), value => ({
+      // Web clients can misread JSON text's content field as an MCP envelope.
+      // Explicit structured data preserves the page; retain text for existing clients.
+      ...jsonContent(value), structuredContent: value
+    })));
 
   server.registerTool("list_host_path", {
     description: "List one allowed local directory with offset pagination. Does not recurse or follow junctions.",
