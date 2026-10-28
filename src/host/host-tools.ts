@@ -172,9 +172,15 @@ export function registerHostTools(
     inputSchema: { path: pathSchema, offset: z.number().int().min(0).optional(),
       max_bytes: z.number().int().min(1).max(262_144).optional(),
       encoding: z.enum(["utf8", "base64"]).optional(),
-      include_sha256: z.boolean().optional().default(false) }, annotations: readOnly
+      include_sha256: z.boolean().optional().default(false) },
+    outputSchema: { path: z.string(), size: z.number().int().nonnegative(), sha256: hash.optional(),
+      encoding: z.enum(["utf8", "base64"]), offset: z.number().int().nonnegative(),
+      bytes_read: z.number().int().nonnegative(), next_offset: z.number().int().nonnegative(),
+      truncated: z.boolean(), content: z.string() }, annotations: readOnly
   }, ({ path, offset, max_bytes, encoding, include_sha256 }) => safe("read", { path },
-    () => files.read(path, offset, max_bytes, encoding, include_sha256)));
+    () => files.read(path, offset, max_bytes, encoding, include_sha256), value => ({
+      ...jsonContent(value), structuredContent: value
+    })));
 
   server.registerTool("list_host_path", {
     description: "List one allowed local directory with offset pagination. Does not recurse or follow junctions.",
