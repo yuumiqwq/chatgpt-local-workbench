@@ -2,7 +2,7 @@
 
 This repository serves a personal workflow: use ChatGPT's chat mode to freely operate your own computer and call different agents as subagents, while communicating only with chat to get things done. A local MCP service sends instructions to local executors and returns progress, results and resumable work records to ChatGPT.
 
-Codex and DeepSeek Harness (DSH) are the built-in executors. Other agents can be invoked through their CLIs when host commands are enabled, but do not automatically gain the durable conversation interface. Desktop GUI automation requires separate tools.
+Codex and DeepSeek Harness (DSH) are the built-in executors. Other agents can be invoked through their CLIs when host commands are enabled, but do not automatically gain the durable conversation interface. Optional [direct agent-desktop tools](docs/desktop.md) run inside this same Workbench MCP server without Codex or a runtime Agent Skill; desktop access is disabled until explicitly configured for this hostname.
 
 [中文](README.md) · [Tool reference](docs/tools.md) · [Deployment](docs/host-operations.md) · [Security](SECURITY.md)
 
@@ -76,7 +76,7 @@ This is a direct-execution service for trusted personal use. Access to its tools
 
 ## Interfaces and maintenance
 
-The MCP entry point exposes 24 tools when host operations are enabled, 27 with separately authorized `export_roots`, and 14 when host operations are disabled. `export_host_file` returns metadata and an MCP resource link for verified binary transfer and delivery through the client's native chat attachments. See [file delivery and client limitations](docs/file-exports.md), the [tool reference](docs/tools.md), [architecture](docs/architecture.md) and [deployment settings](docs/host-operations.md).
+The base MCP entry point exposes 24 tools when host operations are enabled, 27 with separately authorized `export_roots`, and 14 when host operations are disabled. Optional desktop and phone modules add tools according to local policy. `export_host_file` returns metadata and an MCP resource link for verified binary transfer and delivery through the client's native chat attachments. See [file delivery and client limitations](docs/file-exports.md), the [tool reference](docs/tools.md), [architecture](docs/architecture.md) and [deployment settings](docs/host-operations.md).
 
 Run these checks after changes. Tests build the project and use temporary fixtures or simulated executors without paid model calls; the separate build verifies the final output independently.
 

@@ -4,6 +4,8 @@ chatgpt-local-workbench is a personal direct-execution MCP service. New work and
 
 The authoritative [execution and host policy reference](docs/security.md) describes permission modes and their limits. The [threat model](docs/threat-model.md) identifies trust assumptions, and [deployment configuration](docs/host-operations.md) explains the separate host policy.
 
+The optional [direct desktop integration](docs/desktop.md) is disabled by default and requires hostname-specific policy. Review its separate semantic/foreground/input permissions and private snapshot storage before enabling it; desktop text, clipboard and screenshots must not appear in public diagnostics.
+
 ## Reporting
 
 Report vulnerabilities through this repository's [private vulnerability reporting page](https://github.com/yuumiqwq/chatgpt-local-workbench/security/advisories/new). Include the affected commit/version and a minimal reproduction with dummy paths and credentials. Keep tokens, native conversation contents and private task results out of public issues.

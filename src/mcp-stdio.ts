@@ -23,6 +23,8 @@ import { CoreError, serializeError } from "./core/errors.js";
 import { registerTaskResultTools } from "./task-result-tools.js";
 import { HostError, HostPolicy } from "./host/host-policy.js";
 import { registerHostTools } from "./host/host-tools.js";
+import { DESKTOP_INSTRUCTIONS } from "./host/desktop-tools.js";
+import { desktopEnabled } from "./host/desktop-policy.js";
 import { ManagedWorkspaceCatalog } from "./workspaces/managed-workspace-catalog.js";
 import { RegisteredWorkspaceRegistry } from "./workspaces/registered-workspace-registry.js";
 import { WorkspaceOnboardingService } from "./workspaces/workspace-onboarding-service.js";
@@ -135,12 +137,15 @@ async function main(): Promise<void> {
     };
   const phoneConfig = await loadPhoneConfig(resolve(configPath) + ".phone.json");
   const phone = phoneConfig ? new PhoneService(phoneConfig, new RealAdb(phoneConfig)) : undefined;
+  const hostPolicy = await HostPolicy.load(resolve(configPath) + ".host-policy.json");
   const server = new McpServer({ name: "engineering-bridge", version: VERSION }, {
-    instructions: buildServerInstructions(identity, phone ? `${PHONE_INSTRUCTIONS}\n\n${PHONE_EFFICIENCY_INSTRUCTIONS}` : undefined)
+    instructions: buildServerInstructions(identity, [
+      ...(phone ? [PHONE_INSTRUCTIONS, PHONE_EFFICIENCY_INSTRUCTIONS] : []),
+      ...(desktopEnabled(hostPolicy.config.enabled, hostPolicy.config.desktop) ? [DESKTOP_INSTRUCTIONS] : [])
+    ].join("\n\n") || undefined)
   });
   if (phone) registerPhoneTools(server, phone);
 
-  const hostPolicy = await HostPolicy.load(resolve(configPath) + ".host-policy.json");
   const works = new WorkService(resolve(configPath) + ".work-items.json", registry, executorFactory, hostPolicy);
   works.load();
   registerWorkTools(server, works);

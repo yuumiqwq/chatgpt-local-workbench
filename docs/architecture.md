@@ -25,6 +25,7 @@ Registry state and native history have different lifetimes. Completing a run doe
 | `src/executors/` | Codex/DSH protocols, process discovery, deadlines and termination. |
 | `src/workspaces/` | Project identity, managed registration and bounded Git initialization. |
 | `src/host/` | File/command policy, direct operations and native Codex history discovery. |
+| `src/host/desktop-*.ts` | Optional hostname-bound desktop policy, typed CLI command schemas, bounded hidden native runner and direct MCP registration. No executor or second server. |
 | `src/core/`, `src/version.ts` | IDs, safe error serialization and package-derived version. |
 
 There is no plugin loader for arbitrary executor types; adding one requires an adapter implementing `Executor`, factory routing and public schema changes with tests. Existing CLI-based host commands remain an independent path. Persistence and concurrency limits are listed in [compatibility](compatibility.md).

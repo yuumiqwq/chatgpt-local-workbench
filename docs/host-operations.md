@@ -66,6 +66,7 @@ Replace every directory with an existing local path. `codex_homes` identifies ac
 | `export_max_bytes`, `export_ttl_seconds` | Per-export size limit defaults to and permits at most 512,000,000 bytes (decimal 512 MB); lifetime 30–3600 seconds, default 3600. Existing explicit values require an administrator update and later restart. See [file delivery](file-exports.md). |
 | `write_roots` | Paths available to Bridge file mutations. This does not select executor access. |
 | `command_roots`, `commands_enabled` | Opt-in command execution and allowed starting directories. Commands can access other paths under the OS account. |
+| `desktop` | Separate, disabled-by-default agent-desktop policy with explicit hostname, verified native executable and private state directory. Controls semantic actions, headed/physical input, screenshot, clipboard and allowlisted app launch. See [desktop setup](desktop.md). |
 | `codex_homes` | Profiles used for history listing and verified rollout lookup. The first is the default home for new work. |
 | `protected_paths` | Additional paths blocked from host file writes. |
 | `follow_links` | Defaults to false, rejecting links in ordinary host paths. Keep false unless the linked layout has been reviewed. |
@@ -74,7 +75,7 @@ Host file tools exclude credential locations and protect the host policy itself 
 
 `run_host_command` requires an absolute executable and an argument array. It uses no implicit shell, allows 1–45 seconds and captures at most 65,536 bytes across stdout/stderr. On Windows use a real `.exe` or `.com`; invoke a script through an explicit interpreter. Cancellation stops the command, while cancellation of `wait_task` leaves an agent execution running.
 
-Processes started directly by Bridge use hidden console windows on Windows. An executor can still explicitly start an application or open a window; GUI operations are outside the built-in tool set.
+Processes started directly by Bridge use hidden console windows on Windows. An executor can still explicitly start an application or open a window. Direct desktop operations use the optional [agent-desktop tool group](desktop.md) in this same server, enabled independently of host commands.
 
 ## Executor configuration
 

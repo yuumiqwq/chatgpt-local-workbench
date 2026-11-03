@@ -11,6 +11,7 @@ import { runHostCommand } from "./host-command.js";
 import { HostFiles } from "./host-files.js";
 import { EXPORT_BUFFER_BYTES, EXPORT_CHUNK_BYTES, EXPORT_MAX_ACTIVE, EXPORT_RESOURCE_BYTES, HostExports } from "./host-exports.js";
 import { HostError, HostPolicy } from "./host-policy.js";
+import { desktopCapabilities, registerDesktopTools } from "./desktop-tools.js";
 
 function jsonContent(value: unknown) {
   return { content: [{ type: "text" as const, text: JSON.stringify(value) }] };
@@ -71,7 +72,7 @@ export function registerHostTools(
   const pathSchema = z.string().min(1).max(4096);
 
   server.registerTool("host_capabilities", {
-    description: "Read the administrator-configured host capabilities. File roots constrain file tools. Enabled host commands run with the current OS account's privileges; command_roots constrain only the starting directory, not process access. Desktop GUI control is not provided.",
+    description: "Read the administrator-configured host capabilities. File roots constrain file tools. Enabled host commands run with the current OS account's privileges; command_roots constrain only the starting directory, not process access. Desktop tools are a separate hostname-bound opt-in; inspect desktop permissions before use.",
     inputSchema: {}, annotations: readOnly
   }, () => jsonContent({
     hostname: identity.hostname,
@@ -82,12 +83,14 @@ export function registerHostTools(
       transport: "mcp_base64", direct_download: false, chunk_bytes: EXPORT_CHUNK_BYTES,
       resource_max_bytes: EXPORT_RESOURCE_BYTES, max_active: EXPORT_MAX_ACTIVE,
       total_buffer_bytes: EXPORT_BUFFER_BYTES, lifetime: "until expiry, release or process exit" },
-    command_max_seconds: 45, gui_control: false,
+    command_max_seconds: 45, gui_control: desktopCapabilities(policy).enabled,
+    desktop: desktopCapabilities(policy),
     work_execution: { default: "danger-full-access", options: ["read-only", "danger-full-access"], write_scope: "full access uses OS account privileges; read-only prevents model file writes" },
     policy_changes: "local administrator plus runtime restart",
     commands_are_os_sandboxed: false
   }));
   if (!policy.config.enabled) return;
+  registerDesktopTools(server, policy, entry => audit.record(entry));
 
   if (policy.config.export_roots.length > 0) {
     const exports = new HostExports(policy);

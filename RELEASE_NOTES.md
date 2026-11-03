@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add an optional direct agent-desktop integration inside the existing Workbench MCP server: 11 grouped tools for discovery, accessibility observation, semantic actions, windows, clipboard, waits and explicitly permitted capture/physical input. Preserve CLI JSON envelopes, partial snapshots and delivery/retry evidence without automatic retries. Require hostname-bound administrator policy, a pinned native binary and private state; default to headless, bound child execution and keep desktop content out of audit logs. Existing Codex model/thread settings are unchanged.
+
 - Add `phone_drag` for a continuous finger held across observations and incremental movement. Use the installed scrcpy 5.0.1 server in a hidden worker; end lifts the finger, while cancel, disconnect, lease expiry and a bounded inactivity watchdog cancel it. Preserve existing Appium gestures and Phone-Host processes.
 - Reuse the immediately preceding observation's window context within a phone sequence for up to 250 ms, avoiding a duplicate ADB query between adjacent steps. Explicit settling and later calls read context again; text continues to verify its active input connection. Full diagnostics mark reused context.
 - Add optional per-step settling to phone sequences, with fresh element reads after settling and one final observation. Default to compact responses and record detailed timings automatically in bounded local diagnostic logs; preserve failed-step information and receipt replay semantics.

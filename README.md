@@ -4,6 +4,8 @@
 
 当前内置 Codex 和 DeepSeek Harness（DSH）两种执行器，支持项目操作、文件处理和命令执行。其他 agent 可以通过已启用的主机命令工具调用其 CLI。
 
+可在本机 host policy 中单独启用 [agent-desktop 桌面工具](docs/desktop.md)，由 ChatGPT 通过当前 Workbench MCP 直接观察和操作桌面，无需启动 Codex 或另建 MCP 服务。默认关闭，并按主机名及语义操作、物理输入、截图和剪贴板权限分别配置。
+
 [English](README.en.md) · [工具接口](docs/tools.md) · [部署配置](docs/host-operations.md) · [安全边界](SECURITY.md)
 
 ## 工作方式
@@ -88,7 +90,7 @@ Codex 的 `read-only` 使用原生只读策略并关闭网络，DSH 的同名选
 
 ## 接口与维护
 
-当前 MCP 入口在 host policy 开启时提供 24 个工具，另外配置 `export_roots` 后提供 27 个工具，关闭 host policy 时提供 14 个工具。完整参数见[工具清单](docs/tools.md)，各模块关系见[架构](docs/architecture.md)，配置及环境变量见[部署配置](docs/host-operations.md)。
+基础 MCP 入口在 host policy 开启时提供 24 个工具，另外配置 `export_roots` 后提供 27 个工具，关闭 host policy 时提供 14 个工具；可选桌面和手机模块按本机策略增加工具。完整参数见[工具清单](docs/tools.md)，各模块关系见[架构](docs/architecture.md)，配置及环境变量见[部署配置](docs/host-operations.md)。
 
 修改后执行以下验证。`npm test` 自带一次构建，额外的 `build` 可独立确认最终输出；测试使用临时目录和模拟执行器，不需要运行付费模型。
 

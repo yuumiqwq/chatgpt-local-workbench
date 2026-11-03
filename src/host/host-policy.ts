@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { dirname, isAbsolute, join, normalize, parse, relative, resolve, sep } from "node:path";
 import { z } from "zod";
 import { EXPORT_MAX_FILE_BYTES, EXPORT_TTL_SECONDS } from "./export-limits.js";
+import { DesktopPolicySchema } from "./desktop-policy.js";
 
 const PolicySchema = z.object({
   version: z.literal(1),
@@ -15,6 +16,7 @@ const PolicySchema = z.object({
   write_roots: z.array(z.string().min(1)).default([]),
   command_roots: z.array(z.string().min(1)).default([]),
   commands_enabled: z.boolean().default(false),
+  desktop: DesktopPolicySchema.default({}),
   codex_homes: z.array(z.string().min(1)).default([]),
   protected_paths: z.array(z.string().min(1)).default([])
 }).strict();
@@ -146,6 +148,10 @@ export class HostPolicy {
       if (!(await lstat(home)).isDirectory()) throw new Error("Codex homes must exist.");
     }
     const protectedPaths = config.protected_paths.map(absolutePath);
+    // Desktop state contains private refmaps; executables must not be replaced
+    // through file tools even when a deployment grants broad write roots.
+    if (config.desktop.executable) protectedPaths.push(dirname(absolutePath(config.desktop.executable)));
+    if (config.desktop.state_directory) protectedPaths.push(absolutePath(config.desktop.state_directory));
     if (process.platform === "win32") {
       for (const key of ["SystemRoot", "ProgramFiles", "ProgramFiles(x86)", "ProgramData"]) {
         const path = process.env[key];
@@ -159,7 +165,8 @@ export class HostPolicy {
       Promise.all(protectedPaths.map(canonicalProtectionPath)),
       existingCanonicalPath(checkedPolicyPath),
       Promise.all([...config.codex_homes, join(homedir(), ".codex")]
-        .map(home => canonicalProtectionPath(join(home, "auth.json"))))
+        .map(home => canonicalProtectionPath(join(home, "auth.json")))
+        .concat(config.desktop.state_directory ? [canonicalProtectionPath(absolutePath(config.desktop.state_directory))] : []))
     ]);
     // Audit filenames are formed by appending to the configured policy path.
     // A short alias of the policy filename does not extend to its audit siblings.
@@ -215,7 +222,7 @@ export class HostPolicy {
       const parts = canonical.split(/[\\/]/u);
       const secretName = parts.some(part => [".ssh", ".aws", ".azure", "tunnel-secrets"].includes(part.toLowerCase())) ||
         /^\.env(?:$|\.(?!example$|sample$))/iu.test(parse(canonical).base);
-      if (secretName || this.credentialPaths.some(secret => relative(secret, canonical) === "")) {
+      if (secretName || this.credentialPaths.some(secret => containsPath(secret, canonical))) {
         throw new HostError("HOST_PATH_DENIED", "Credential files are not exposed by host file tools.");
       }
     }
