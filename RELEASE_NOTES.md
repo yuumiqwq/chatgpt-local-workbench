@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Ensure the official pinned agent-desktop 1.0.2 package on Windows deployment and automatic update, with local no-op checks, data-drive staging/cache, package integrity and native SHA-256 verification. Keep check mode free of installation effects; optional failures do not block Workbench, and host desktop authorization remains independent.
+
 - Add an optional direct agent-desktop integration inside the existing Workbench MCP server: 11 grouped tools for discovery, accessibility observation, semantic actions, windows, clipboard, waits and explicitly permitted capture/physical input. Preserve CLI JSON envelopes, partial snapshots and delivery/retry evidence without automatic retries. Require hostname-bound administrator policy, a pinned native binary and private state; default to headless, bound child execution and keep desktop content out of audit logs. Existing Codex model/thread settings are unchanged.
 
 - Add `phone_drag` for a continuous finger held across observations and incremental movement. Use the installed scrcpy 5.0.1 server in a hidden worker; end lifts the finger, while cancel, disconnect, lease expiry and a bounded inactivity watchdog cancel it. Preserve existing Appium gestures and Phone-Host processes.

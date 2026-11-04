@@ -9,7 +9,7 @@ import { acquireLock, deploy, DeploymentError, loadConfig } from './deploy-windo
 const read = file => JSON.parse(readFileSync(file, 'utf8').replace(/^\uFEFF/u, ''));
 const defer = message => { throw new DeploymentError('BUSY', message, 2); };
 
-export async function autoDeploy(file, { signal } = {}) {
+export async function autoDeploy(file, { signal, runDeploy = deploy } = {}) {
   const spec = read(file);
   if (spec.version !== 1 || spec.hostname !== hostname()) throw new DeploymentError('CONFIG', 'Automatic deployment belongs to another host.');
   const config = loadConfig(spec.deployment_config);
@@ -23,7 +23,11 @@ export async function autoDeploy(file, { signal } = {}) {
   let phoneLock, pauseOwned = false;
   try {
     save();
-    const checked = await deploy(spec.deployment_config, 'check', { signal });
+    // Optional dependency maintenance is independent of release/guardian state.
+    // Explicit mode keeps deploy(check) free of installation side effects.
+    const dependencies = await runDeploy(spec.deployment_config, 'ensure-desktop', { signal });
+    report.agent_desktop = dependencies.agent_desktop;
+    const checked = await runDeploy(spec.deployment_config, 'check', { signal });
     report.target = checked.target;
     if (!checked.deployment_needed) { report.status = 'up-to-date'; return report; }
     if (spec.phone_state_directory) {
@@ -51,7 +55,7 @@ export async function autoDeploy(file, { signal } = {}) {
       if (!acknowledged) defer('Runtime guardian did not acknowledge maintenance.');
     }
     report.status = 'deploying'; save();
-    const result = await deploy(spec.deployment_config, 'apply', { signal });
+    const result = await runDeploy(spec.deployment_config, 'apply', { signal });
     report.status = result.result;
     report.target = result.target;
     return report;

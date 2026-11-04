@@ -10,6 +10,7 @@ import { hostname } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { pathToFileURL } from 'node:url';
+import { ensureAgentDesktop } from './ensure-agent-desktop.mjs';
 
 export class DeploymentError extends Error {
   constructor(code, message, exitCode = 1) {
@@ -110,6 +111,7 @@ export function loadConfig(file) {
   const npmCli = absolute(raw.npm_cli ?? join(dirname(process.execPath), 'node_modules/npm/bin/npm-cli.js'), 'npm_cli');
   const config = {
     configFile, repository, stateDirectory, workRegistries, protectedFiles, npmCli, releases,
+    agentDesktop: raw.agent_desktop,
     git: raw.git_executable === undefined ? 'git' : absolute(raw.git_executable, 'git_executable'),
     commandTimeout: seconds(raw.command_timeout_seconds, 1200, 'command_timeout_seconds'),
     healthTimeout: seconds(raw.health_timeout_seconds, 90, 'health_timeout_seconds'),
@@ -259,8 +261,8 @@ export function runCommand({ executable, args, cwd, env, timeout, signal, log, e
   });
 }
 
-export async function deploy(configFile, mode = 'check', { signal, onEvent = () => {} } = {}) {
-  if (!['check', 'apply'].includes(mode)) fail('USAGE', 'Mode must be check or apply.');
+export async function deploy(configFile, mode = 'check', { signal, onEvent = () => {}, ensureDesktop = ensureAgentDesktop } = {}) {
+  if (!['check', 'apply', 'ensure-desktop'].includes(mode)) fail('USAGE', 'Mode must be check, apply or ensure-desktop.');
   const config = loadConfig(configFile);
   mkdirSync(config.stateDirectory, { recursive: true });
   const runId = new Date().toISOString().replace(/[:.]/gu, '-') + '-' + randomUUID();
@@ -329,6 +331,14 @@ export async function deploy(configFile, mode = 'check', { signal, onEvent = () 
   };
   try {
     event('begin', { mode });
+    // Check retains its existing inspection-only behavior. Apply installs even
+    // before an up-to-date/busy return, without selecting or restarting a release.
+    const agentDesktop = mode === 'check' ? undefined : await ensureDesktop(config, { invoke, event, signal });
+    if (mode === 'ensure-desktop') {
+      const result = { result: 'dependencies-checked', agent_desktop: agentDesktop };
+      event('result', result);
+      return result;
+    }
     const top = realpathSync(await git('rev-parse', '--show-toplevel'));
     if (relative(top, config.repository) !== '') fail('REPOSITORY', 'repository must be the checkout root.');
     const common = realpathSync(resolve(config.repository, await git('rev-parse', '--git-common-dir')));
@@ -489,10 +499,10 @@ export async function deploy(configFile, mode = 'check', { signal, onEvent = () 
 async function main() {
   const args = process.argv.slice(2);
   if (args.length === 1 && args[0] === '--help') {
-    console.log('node scripts/deploy-windows.mjs check|apply --config <absolute-private-config.json>');
+    console.log('node scripts/deploy-windows.mjs check|apply|ensure-desktop --config <absolute-private-config.json>');
     return;
   }
-  if (args.length !== 3 || args[1] !== '--config') fail('USAGE', 'Use check|apply --config <absolute-private-config.json>.');
+  if (args.length !== 3 || args[1] !== '--config') fail('USAGE', 'Use check|apply|ensure-desktop --config <absolute-private-config.json>.');
   if (Number(process.versions.node.split('.')[0]) < 22) fail('NODE_VERSION', 'Node.js 22 or newer is required.');
   const controller = new AbortController();
   const cancel = () => controller.abort();

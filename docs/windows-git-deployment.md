@@ -120,6 +120,16 @@ Git、依赖安装或验证失败时，脚本不调用隧道启停命令。已�
 
 脚本不读写 Codex 原生会话目录，不删除工作记录或结果文件。重启后，已有 `work_id` 与原生 thread UUID 继续由原配置和会话目录提供；正在执行的任务需先完成，进程重启本身不恢复尚未完成的执行。
 
+## agent-desktop 默认安装
+
+Windows 的 `Apply` 和 `Ensure-Desktop` 默认检查官方 `agent-desktop@1.0.2`，自动更新协调器也会在检查版本前单独执行 `Ensure-Desktop`，因此没有 Workbench 更新时仍能补装。`Check` 保持原有检查行为和输出，不安装依赖。仅补装时使用 `node scripts/deploy-windows.mjs ensure-desktop --config <本机部署配置>`，不调用 Git 或服务启停命令；自定义定时协调器也应在其更新模式中显式执行这一命令。
+
+已有安装通过包版本、官方来源及原生程序 SHA-256 校验后直接复用，不运行 npm。默认识别 ROG 的 `E:/Codex/Tools/agent-desktop`，`D:/StudyServer` 下的部署使用 `D:/StudyServer/tools/agent-desktop`，其他主机优先使用已有 E 盘 Codex 目录或源码所在的数据盘。私有部署配置可添加 `"agent_desktop": { "directory": "D:/Tools/agent-desktop", "cache_directory": "D:/Caches/agent-desktop-npm" }`；缓存默认位于安装目录同级的 `agent-desktop-npm-cache`。路径必须在本机数据盘，并与源码、版本目录及私有配置分开。`"enabled": false` 可关闭自动安装，这个设置不代表桌面授权。
+
+安装器在同级暂存目录使用固定的官方 npm tarball、SHA-512 integrity 和每种架构的原生 SHA-256。已核验 1.0.2 tarball 包含 Windows x64/ARM64 程序及 `.sha256` 文件，并通过关闭生命周期脚本的全新安装测试；因此使用 `--ignore-scripts`，随后核对包内校验文件及原生 `version` JSON，无须执行 postinstall 的下载回退或启动器改写。支持 Windows x64/ARM64，不调用 GUI。npm 最多运行 120 秒，版本检查最多 10 秒，安装期间每 10 秒写入进度事件。校验完成才替换安装目录，旧目录保留为 `.previous-<UUID>`，替换失败尝试恢复；工作版本中的二进制校验失败会留下诊断，等待本机核查。
+
+安装失败作为可选依赖警告记录在私有部署日志中，不阻止 Workbench 原有部署流程，也不会单独触发服务重启。安装结果包含版本、路径和哈希，仅保存在本机私有日志或显式命令结果中。异常中断留下的 `.install-lock` 须在确认安装进程已退出后人工移除；暂存目录和旧版本可在维护时清理。安装器不读写主机权限策略，Legion 等未授权主机仍无桌面控制权限；将来升级固定版本和哈希时，已有桌面策略也须由管理员独立复核。
+
 ## 日志与锁恢复
 
 `state_directory` 中的 `deployment.json` 记录目标提交、成功部署的提交和当前阶段。每次调用另存一份 `.jsonl` 事件日志及 `.commands.log` 命令输出，控制台仅显示阶段信息及结果。命令日志最多保留每个命令前 20 MiB 输出；凭据及工具诊断可能出现在命令输出中，因此此目录应沿用仅供运行账户访问的 Windows 文件权限。旧日志可按本机保留策略清理，成功状态文件应保留。
@@ -146,7 +156,7 @@ Git、依赖安装或验证失败时，脚本不调用隧道启停命令。已�
 
 安装或测试失败会保留当前启动位置并移除未启用的候选目录。成功后默认保留三个已部署版本，仅清理部署记录中属于同一配置的较早版本。旧检出目录中的 `node_modules` 和 `dist` 不参与替换，已使用这些目录的独立手机进程可以继续运行。
 
-`scripts/auto-deploy-windows.mjs --config <本机自动部署配置>` 先执行检查，仅在需要部署时执行 Apply。它要求启用独立版本目录，可同时配合现有的看护暂停文件和手机操作锁。以下文件也应保存在仓库之外，路径采用目标主机的实际值。
+`scripts/auto-deploy-windows.mjs --config <本机自动部署配置>` 先检查可选桌面依赖，再检查版本，仅在需要部署时执行 Apply。它要求启用独立版本目录，可同时配合现有的看护暂停文件和手机操作锁。以下文件也应保存在仓库之外，路径采用目标主机的实际值。
 
 ```json
 {

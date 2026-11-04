@@ -110,6 +110,7 @@ function fixture(t, count = 1) {
     writeFileSync(join(privateDir, 'tunnel.mjs'), fakeProgram);
     const invoke = action => ({ executable: process.execPath, args: [join(privateDir, 'tunnel.mjs'), action] });
     const config = { version: 1, repository: repo, state_directory: join(privateDir, 'deployment-state'),
+      agent_desktop: { enabled: false },
       npm_cli: join(privateDir, 'npm-cli.mjs'), work_registries: [registry],
       protected_files: [join(privateDir, 'profile.yaml')], health_timeout_seconds: 1,
       tunnel: { id: `existing-${i}`, status: invoke('status'), stop: invoke('stop'), start: invoke('start') } };
@@ -139,6 +140,44 @@ test('check fetches origin/main without updating the checkout or restarting', as
   assert.equal(git(f.repo, 'rev-parse', 'origin/main'), target);
   assert.deepEqual(f.calls(), ['status']); noLocks(f);
   assert.equal(existsSync(join(f.config.state_directory, 'deployment.json')), false);
+});
+
+test('check never invokes the optional installer; explicit ensure never invokes Git or service commands', async t => {
+  const f = fixture(t);
+  const calls = [];
+  const ensureDesktop = async () => { calls.push('ensure'); return { status: 'failed', code: 'MOCK_NETWORK' }; };
+  const checked = await deploy(f.configFile, 'check', { ensureDesktop });
+  assert.deepEqual(calls, []); assert.equal('agent_desktop' in checked, false);
+  const before = f.calls();
+  const result = await deploy(f.configFile, 'ensure-desktop', { ensureDesktop });
+  assert.equal(result.agent_desktop.status, 'failed'); assert.deepEqual(calls, ['ensure']);
+  assert.deepEqual(f.calls(), before); noRestart(f); noLocks(f);
+});
+
+test('apply ensures desktop on bootstrap and unchanged release; optional failure does not block deployment', async t => {
+  const f = fixture(t), original = readFileSync(join(f.privateDir, 'profile.yaml'), 'utf8');
+  let calls = 0;
+  const ensureDesktop = async () => { calls++; return { status: 'failed', code: 'MOCK_NETWORK' }; };
+  assert.equal((await deploy(f.configFile, 'apply', { ensureDesktop })).result, 'deployed');
+  const before = f.calls().length;
+  assert.equal((await deploy(f.configFile, 'apply', { ensureDesktop })).result, 'up-to-date');
+  assert.equal(calls, 2); assert.deepEqual(f.calls().slice(before), ['status']);
+  assert.equal(readFileSync(join(f.privateDir, 'profile.yaml'), 'utf8'), original);
+});
+
+test('automatic update explicitly ensures desktop even with no release pending, without maintenance or restart', async t => {
+  const f = fixture(t); enableReleases(f);
+  const auto = join(f.privateDir, 'auto.json');
+  save(auto, { version: 1, hostname: hostname(), deployment_config: f.configFile });
+  const modes = [];
+  const runDeploy = async (_file, mode) => {
+    modes.push(mode);
+    return mode === 'ensure-desktop' ? { agent_desktop: { status: 'failed' } }
+      : { deployment_needed: false, target: f.initial };
+  };
+  const result = await autoDeploy(auto, { runDeploy });
+  assert.equal(result.status, 'up-to-date'); assert.equal(result.agent_desktop.status, 'failed');
+  assert.deepEqual(modes, ['ensure-desktop', 'check']); assert.deepEqual(f.calls(), []);
 });
 
 test('two independent computers fast-forward separately and preserve local identities and data', async t => {

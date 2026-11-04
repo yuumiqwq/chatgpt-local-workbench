@@ -2,7 +2,7 @@
 param(
   [Parameter(Mandatory = $true)]
   [string]$Config,
-  [ValidateSet('Check', 'Apply')]
+  [ValidateSet('Check', 'Apply', 'Ensure-Desktop')]
   [string]$Mode = 'Check'
 )
 
