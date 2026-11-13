@@ -1,5 +1,7 @@
 # chatgpt-local-workbench
 
+Public tools default to v1 names. Set `ENGINEERING_BRIDGE_API_NAME_PROFILE=v2` for semantic names without duplicate aliases; see [name profiles and migration](docs/api-name-profiles.md).
+
 This repository serves a personal workflow: use ChatGPT's chat mode to freely operate your own computer and call different agents as subagents, while communicating only with chat to get things done. A local MCP service sends instructions to local executors and returns progress, results and resumable work records to ChatGPT.
 
 Codex and DeepSeek Harness (DSH) are the built-in executors. Other agents can be invoked through their CLIs when host commands are enabled, but do not automatically gain the durable conversation interface. Optional [direct agent-desktop tools](docs/desktop.md) run inside this same Workbench MCP server without Codex or a runtime Agent Skill; desktop access is disabled until explicitly configured for this hostname.

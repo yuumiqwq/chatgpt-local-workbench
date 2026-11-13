@@ -1,5 +1,7 @@
 # Compatibility and maintenance limits
 
+Public tool names now have explicit [v1/v2 name profiles](api-name-profiles.md). Default v1 remains compatible; the v2 profile changes names only, with the same schemas, permissions, work IDs, task IDs and native history.
+
 The repository is `chatgpt-local-workbench`. Existing installations continue to use the identifiers below; changing a repository URL does not require moving a local checkout or a Codex profile.
 
 ## Stable installation identifiers

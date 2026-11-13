@@ -1,14 +1,15 @@
-import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { toolText } from "./api-names.js";
+import type { ToolRegistry } from "./api-names.js";
 import { z } from "zod";
 import { HostError } from "./host/host-policy.js";
 import { serializeError } from "./core/errors.js";
 import { WorkService } from "./tasks/work-service.js";
 import { RECOVERY_REMINDER } from "./server-instructions.js";
 
-export function registerWorkTools(server: McpServer, works: WorkService) {
+export function registerWorkTools(server: ToolRegistry, works: WorkService) {
   const id = z.string().uuid(), text = z.string().min(1);
   const access = z.enum(["read-only", "danger-full-access"])
-    .describe("Per-execution access for Codex and DSH: read-only or danger-full-access. New work and run_temp default to danger-full-access; continue_work inherits the work setting unless overridden.");
+    .describe(toolText("Per-execution access for Codex and DSH: read-only or danger-full-access. New work and run_temp default to danger-full-access; continue_work inherits the work setting unless overridden.", server.nameProfile ?? "v1"));
   const turn = { instruction: text.max(200_000), model: text.optional(),
     reasoning_effort: text.optional(), access: access.optional() };
   const safe = async (operation: () => unknown) => {

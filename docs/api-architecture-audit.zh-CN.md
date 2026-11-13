@@ -1,12 +1,14 @@
 # Workbench 公共接口架构审计
 
+后续实施：已加入[显式 v1/v2 名称配置](api-name-profiles.md)，默认 v1，v2 替换十一项名称且不同时注册旧别名。下表继续作为 v1 固定清单，v2 按迁移表逐项映射，字段及工具总数相同；先前关于命名的建议已落实为注册代码，其余响应格式、选择器和跨实例租约建议仍待实施。
+
 本次审计覆盖整个公共 MCP 接口，不限于进程工具。初始基线为 `7ce2c53`，已整合当前 main `1183433` 的统一文件读取变更，新增只读 `list_tasks` 后的接口如下；生产入口为 `src/mcp-stdio.ts`，独立手机入口为 `src/phone/mcp-stdio.ts`。源码、测试及可选适配器已交叉检查，当前部署实例未重启，客户端缓存和真实硬件可用性不属于本次源码验证结果。
 
 ## 方法、计数与发现边界
 
 `tests/unit/api-inventory.test.ts` 用 TypeScript AST 遍历全部 `src/**/*.ts` 的工具、资源及 prompt 注册调用，再与实际 STDIO `tools/list` 比对；动态名称来自 `desktopSchemas` 和 `phoneSchemas`，没有只扫描字面量。测试锁定注册模块，新增注册入口会要求人工补充清单。完整 JSON inputSchema 的 SHA-256 固定在 `tests/fixtures/api-schema-digests.json`，防止无意修改名称或签名；本文每个工具的输入字段与实际 schema 自动核对。
 
-64 组真实子进程组合覆盖 host × commands × exports × phone × desktop，其中桌面为关闭、只观察、全部启用、主机名不匹配四种状态。另测独立手机入口、24 组细分桌面权限和功能恢复。依赖路径使用测试替身，只发现工具，不连接真实手机或桌面。完整 schema、目录字节量及每组计数保存在运行测试的工作树 `codex-generated/api-audit/`。文档、README 中的当前计数也有断言；RELEASE_NOTES 中的 24-tool 数字属于历史版本记录，保留其当时含义。
+两个名称配置共 128 组真实子进程组合覆盖 host × commands × exports × phone × desktop，其中桌面为关闭、只观察、全部启用、主机名不匹配四种状态。另测两种名称配置的独立手机入口、24 组细分桌面权限和功能恢复。依赖路径使用测试替身，只发现工具，不连接真实手机或桌面。完整 schema、目录字节量及每组计数保存在运行测试的工作树 `codex-generated/api-audit/`。文档、README 中的当前计数也有断言；RELEASE_NOTES 中的 24-tool 数字属于历史版本记录，保留其当时含义。
 
 <!-- api-counts: {"disabled":15,"host":26,"exports":29,"phone":11,"desktop_max":11,"all":51} -->
 
@@ -37,7 +39,7 @@
 | `list_work` | 工作 | archived, cwd, limit, offset, query, status, workspace_id | work_id | 只读注册表 | 同步 | 保留；仅持久工作，不是全部任务 |
 | `open_work` | 工作 | access, cwd, name, thread_id, work_id, workspace_id | work_id / thread_id / workspace_id | 登记及原生 unarchive；cwd 读策略 | 同步 RPC | 保留；prepare/reopen/adopt，不运行模型 |
 | `continue_work` | 工作 | access, instruction, model, reasoning_effort, work_id | work_id → task_id / thread_id | 每次执行 access；继承工作设置 | 异步任务 | 保留；持久 Codex turn |
-| `run_temp` | agent | access, cwd, executor, instruction, model, reasoning_effort, work_id, workspace_id | task_id；可关联 work_id | access 默认完全访问；cwd 读策略 | 异步任务 | 保留；临时会话，结果仍保留；不增加 run_agent 别名 |
+| `run_temp` | agent | access, cwd, executor, instruction, model, reasoning_effort, work_id, workspace_id | task_id；可关联 work_id | access 默认完全访问；cwd 读策略 | 异步任务 | v1 保留；v2 run_agent_once；临时会话，结果仍保留 |
 | `finish_work` | 工作 | references, summary, work_id | work_id | 修改完成状态及总结 | 同步 | 保留；用户目标的语义完成，不是终止进程 |
 | `manage_work` | 工作 | action, work_id | work_id / thread_id | 可删除原生历史及子线程 | 同步 RPC | 保留 action 分组；不扩成四个别名 |
 | `work_retention` | 维护 | archive_completed_days, delete_archived_days, max_results, result_days, sweep | 工作及任务结果 | 读配置或修改/清理 | 同步 RPC | 保留兼容；名称范围偏窄，策略也覆盖 process |
@@ -45,7 +47,7 @@
 | `bind_project` | 项目 | project_path | 路径 → workspace_id | project_root 内登记目录 | 同步 | 保留；不创建文件，身份登记仍是写操作 |
 | `create_project` | 项目 | name, parent | 路径 → workspace_id | project_root 内 mkdir + git init + 登记 | 同步子进程 | 保留；不是从模板创建项目 |
 | `list_tasks` | 任务 | created_after, kind, limit, offset, state | task_id | 只读共享 runs 元数据 | 同步 | 新增；补足丢失回执恢复，无相同功能旧接口 |
-| `task_result` | 任务 | task_id | task_id | 只读共享结果 | 同步 | 保留；运行中状态/输出也可查询，不增加 get_task |
+| `task_result` | 任务 | task_id | task_id | 只读共享结果 | 同步 | v1 保留；v2 get_task，明确也查询运行中状态/输出 |
 | `wait_task` | 任务 | task_id, timeout_seconds | task_id | 只读；取消仅结束等待 | 有界等待 | 保留；超时返回当前视图 |
 | `control_task` | 任务 | action, instruction, task_id | task_id | 仅持有 live handle 的实例；依执行器能力 | 控制请求 | 保留 interrupt/steer；interrupt 回执不证明已退出 |
 | `host_capabilities` | 能力 | — | server_version；version 是策略格式 | 只读本实例加载的策略 | 同步 | 保留；暴露不等于授权，更不等于依赖可用 |
@@ -73,7 +75,7 @@
 
 | 工具 | 域 | 输入字段，机器核对 | 标识与作用域 | 访问 / 策略 | 调用方式 | 状态及命名取舍 |
 | --- | --- | --- | --- | --- | --- | --- |
-| `server_status` | 手机 | — | 设备配置；无 task_id | phone 配置；只读设备探测 | 同步 ADB | 保留历史名称；v2 可改 phone_status，当前不加别名 |
+| `server_status` | 手机 | — | 设备配置；无 task_id | phone 配置；只读设备探测 | 同步 ADB | v1 保留；v2 phone_status；每套目录只注册一个名称 |
 | `phone_acquire_control` | 手机 | — | → lease_id | 独占短期 bearer lease；可能切换 IME | 同步 ADB | 保留；不是只读能力查询 |
 | `phone_release_control` | 手机 | lease_id | lease_id | 有效 bearer lease | 同步 | 保留；幂等释放，不代表任务完成 |
 | `phone_observe` | 手机 | image, response_detail, ui, wait_for | → frame_id / element_id | 只读设备；不要求控制 lease | 同步观察/等待 | 保留；frame 有效期短，内容是不可信数据 |
@@ -175,15 +177,15 @@ P1 表示会造成错误路由、恢复失败或误判控制结果；P2 表示�
 | version 含义 / 中 | host_capabilities.version=1 是策略格式；不能辨别 app 版本 | 添加 server_version=VERSION，保留 version 字段；包版本仍可能跨多个提交相同 | 增量字段；精确部署提交仍需部署记录；P1 已做 |
 | run_temp / 高 | 旧 live 文案 any one-off instruction 易把普通命令路由到模型 | 当前源码已写 agent；server instructions 明确命令优先选择及 vocabulary | 名称保留，不加 run_agent；P1 已做 |
 | finish_work / 中 | finish 容易理解为终止执行；实际记录 caller decision | 明确不会 stop，不证明业务成功；运行期间拒绝 finish | 不改语义；P1 文档已做 |
-| task_result / 中 | 名称像只返回最终结果，实际支持 running snapshot | 保留 current status/output 描述，与 wait/control 区分 | 不加 get_task；P2 已做 |
+| task_result / 中 | 名称像只返回最终结果，实际支持 running snapshot | 保留 current status/output 描述，与 wait/control 区分 | v2 名称配置已实现 get_task，v1 兼容；P2 |
 | project/workspace/history / 中 | list_codex_projects 是当前页历史按 cwd 分组，不是登记列表 | 决策指南区分 list_workspaces 与 history discovery；重复项目跨页可重现 | 不合并不同数据源；P1 文档已做 |
 | selector 优先级 / 中 | open 的 work/thread/workspace/cwd 与 temp 的 workspace/cwd/work 不同；多选会忽略部分输入 | 当前说明每次只给一个选择器；v2 用显式 tagged target、互斥校验 | 立即拒绝旧组合可能破坏客户端；P2 待迁移 |
 | manage_work / 中 | archive、delete_history、forget 删除对象不同；native delete 含子线程 | 保留 action 并逐项解释；destructiveHint 对整个工具保守提示 | 不扩成多个工具；P1 文档已做 |
 | work_retention / 中 | 名字似乎只管理 work，实际也清理 process/agent run results | 明确作用范围和立即 prune；v2 可命名 retention，读/配置/清理分域 | 现有签名保留；P2 |
-| 手机 server_status / 中 | 无前缀且含版本，易误认 Bridge 健康检查 | 描述明确 Android adapter；独立入口补齐相同安全指令 | v2 phone_status，迁移期间提供版本化目录而非默认双注册；P2 已做描述 |
+| 手机 server_status / 中 | 无前缀且含版本，易误认 Bridge 健康检查 | 描述明确 Android adapter；独立入口补齐相同安全指令 | v2 phone_status 已实现；默认 v1，无双注册；P2 |
 | 手机漏列 / 中 | phoneSchemas 有 11，旧 tools.md 只有 10 | 补 phone_drag，AST + STDIO 自动防漂移 | 文档修正；P1 已做 |
 | desktop capability / 中 | 模块启用不保证 mutation/clipboard/物理输入，也不保证 CLI 安装 | 共用 desktopToolNames；clipboard 只能读时 annotation 改为 readOnly | 保留 schema，执行时权限仍复核；P1 已做 |
-| 文件短名 / 低 | copy_file/move_file/delete_file 无 host 前缀，与 read_host_file 不一致 | 文档归入 host/files，保留既有短名 | v2 版本化命名空间可统一；不增三个别名；P3 |
+| 文件短名 / 低 | copy_file/move_file/delete_file 无 host 前缀，与 read_host_file 不一致 | 文档归入 host/files，保留既有短名 | v2 copy_host_file/move_host_file/delete_host_file 已实现；无双注册；P3 |
 | 文档与原始字节 / 中 | byte 与 Unicode offset 语义不同，解析与交付也不同 | 1183433 已移除 read_host_document，并将 read_host_file 默认改为 auto；raw/encoding=base64 保留原字节读取。旧文档专用调用和默认 HTML 读取存在迁移影响，需在部署通知中明确 | 该改动来自独立提交，本轮不改其实现；按最新 schema 重验；P1 迁移说明 |
 | 工具暴露与授权 / 中 | commands=false 仍列工具，exports/desktop 则隐藏；依赖缺失仍可注册 | 明确 tools/list 是发现，capabilities 是策略，实际调用验证依赖；矩阵覆盖 | 不让关闭命令导致旧名称突然消失；P2 |
 | 输出/错误约定 / 中 | host/core error 对象，UNKNOWN_TASK 是字符串，desktop envelope，phone 字符串/receipt；resource 用协议错误 | 保留 v1 各域格式并记录；v2 统一 envelope，保留 disposition/outcome_unknown | 不一次强改已有解析器；P2 |
@@ -212,16 +214,16 @@ P1 表示会造成错误路由、恢复失败或误判控制结果；P2 表示�
 
 手机与桌面各增加约 20 KiB 的 schema/描述，分组 action/request 已减少工具名称数量。兼容调用继续保留，但不重复注册别名；完整恢复指导集中到 server instructions，启动及等待工具只保留短提醒。后续如要按场景缩减目录，应提供显式能力配置及客户端刷新协议，不能静默藏起已依赖的接口。
 
-## 约定与 v2 目标
+## 约定与后续协议目标
 
 v1 的成功数据仍主要是 JSON text，file/document/export/desktop 会额外提供 structuredContent；接收端先检查 MCP isError，再按域读取业务状态。输出或 task ready 均不是成功验收。启动操作缺少 request_id 时，不保证网络重试幂等；list_tasks 仅提供恢复候选，不提供 exactly-once 承诺。SDK 参数校验失败与 resource/read 错误是协议层错误，业务失败保留现有格式。文件 copy/move/write 摘要检查与进程 OS 权限是两种边界，不共用一个“安全执行”开关。
 
-v2 建议保留小词汇：workspace 身份、work 持久语义、task 单次执行、thread 原生历史、process 执行种类。通过协商的版本化目录或另一个显式入口迁移，采用分域命名而非在默认目录同时注册旧名与别名。拟议统一响应包含 data、error.code/message、operation state/outcome，desktop disposition 和 phone receipts 原样嵌入；异步启动增加客户端幂等键及稳定 owner 标识，selector 改为互斥 target。迁移前保存 v1 schema 快照、提供客户端切换指南并测试旧 store；不自动重写原生 thread UUID 或删除 legacy 读取器。
+后续协议演进建议保留小词汇：workspace 身份、work 持久语义、task 单次执行、thread 原生历史、process 执行种类。通过协商的版本化目录或另一个显式入口迁移，采用分域命名而非在默认目录同时注册旧名与别名。拟议统一响应包含 data、error.code/message、operation state/outcome，desktop disposition 和 phone receipts 原样嵌入；异步启动增加客户端幂等键及稳定 owner 标识，selector 改为互斥 target。迁移前保存 v1 schema 快照、提供客户端切换指南并测试旧 store；不自动重写原生 thread UUID 或删除 legacy 读取器。
 
-当前不新增 get_task、run_agent、phone_status、host_copy_file 等同义工具；只有 list_tasks 补足实际缺失的恢复路径。配置维护继续本地管理，运行时开放任意策略写入接口会改变信任边界，不属于本次改进。
+初次审计仅新增 list_tasks。后续已实现显式 v2 名称配置，其中 get_task、run_agent_once、phone_status 和 copy_host_file 等替代各自 v1 名称；同一目录仍无重复别名。配置维护继续本地管理，运行时开放任意策略写入接口会改变信任边界，不属于本次改进。
 
 ## 验证与部署
 
-本地验证环境为 Windows、Node 24.19.0 / npm 11.17.0。typecheck、build、npm pack --dry-run --ignore-scripts 通过。完整测试集 593 项，591 通过、2 项平台条件跳过、0 失败，最终命令为 node --test --test-concurrency=4 "dist/tests/unit/**/*.test.js"，约 212 秒。常规 npm test 首轮发现指令顺序断言需更新；更新后全量并发触发一次已有 Codex inactivity watchdog 计时失败，该用例独立重跑及限制并发的完整重跑均通过，未改动执行器实现或其测试时限。日志位于本工作树 codex-generated/audit/。矩阵不是硬件验收，未启动真实 agent、ADB 或桌面 CLI。本轮不执行依赖安全公告调查，也不触碰其他工作目录。
+初次审计验证记录，后续名称配置测试另见迁移文档及提交记录：本地验证环境为 Windows、Node 24.19.0 / npm 11.17.0。typecheck、build、npm pack --dry-run --ignore-scripts 通过。完整测试集 593 项，591 通过、2 项平台条件跳过、0 失败，最终命令为 node --test --test-concurrency=4 "dist/tests/unit/**/*.test.js"，约 212 秒。常规 npm test 首轮发现指令顺序断言需更新；更新后全量并发触发一次已有 Codex inactivity watchdog 计时失败，该用例独立重跑及限制并发的完整重跑均通过，未改动执行器实现或其测试时限。日志位于本工作树 codex-generated/audit/。矩阵不是硬件验收，未启动真实 agent、ADB 或桌面 CLI。本轮不执行依赖安全公告调查，也不触碰其他工作目录。
 
 部署须在现有工作结束后协调：保留私有配置和 store，构建并更新运行文件，再安排 Bridge 重启；刷新客户端工具元数据，重新读取 host_capabilities.server_version、desktop.tool_names 与 tools/list。server_version 来自包版本，同版本多个提交需要部署记录核对 commit；仅政策 gui_control=true 不证明客户端目录新鲜。不得自动重启活跃实例或远端机器。

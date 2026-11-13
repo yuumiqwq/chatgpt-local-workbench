@@ -12,6 +12,7 @@ import { registerWorkTools } from "./work-tools.js";
 import type { ExecutorFactory } from "./tasks/execution-types.js";
 import { CodexExecutor } from "./executors/codex-executor.js";
 import { DshExecutor } from "./executors/dsh-executor.js";
+import { apiNameProfile, createToolRegistry } from "./api-names.js";
 import { VERSION } from "./version.js";
 import { loadPhoneConfig } from "./phone/config.js";
 import { RealAdb } from "./phone/adb.js";
@@ -96,6 +97,7 @@ async function main(): Promise<void> {
     throw new Error("Usage: node dist/src/mcp-stdio.js /absolute/path/to/workspaces.json");
   }
 
+  const nameProfile = apiNameProfile();
   const configPath = process.argv[2];
   if (configPath === undefined) throw new Error("Workspace configuration path is required.");
   const identity = await loadHostIdentity(resolve(configPath) + ".identity.json");
@@ -131,17 +133,18 @@ async function main(): Promise<void> {
   const phoneConfig = await loadPhoneConfig(resolve(configPath) + ".phone.json");
   const phone = phoneConfig ? new PhoneService(phoneConfig, new RealAdb(phoneConfig)) : undefined;
   const hostPolicy = await HostPolicy.load(resolve(configPath) + ".host-policy.json");
-  const server = new McpServer({ name: "engineering-bridge", version: VERSION }, {
+  const server = new McpServer({ name: "engineering-bridge", version: VERSION, title: `Workbench (API names ${nameProfile})` }, {
     instructions: buildServerInstructions(identity, [
       ...(phone ? [PHONE_INSTRUCTIONS, PHONE_EFFICIENCY_INSTRUCTIONS] : []),
       ...(desktopEnabled(hostPolicy.config.enabled, hostPolicy.config.desktop) ? [DESKTOP_INSTRUCTIONS] : [])
-    ].join("\n\n") || undefined)
+    ].join("\n\n") || undefined, nameProfile)
   });
-  if (phone) registerPhoneTools(server, phone);
+  const tools = createToolRegistry(server, nameProfile);
+  if (phone) registerPhoneTools(tools, phone);
 
   const works = new WorkService(resolve(configPath) + ".work-items.json", registry, executorFactory, hostPolicy);
   works.load();
-  registerWorkTools(server, works);
+  registerWorkTools(tools, works);
   let sweeping = false;
   const sweep = async () => {
     if (sweeping) return;
@@ -150,7 +153,7 @@ async function main(): Promise<void> {
     finally { sweeping = false; }
   };
   setInterval(() => { void sweep(); }, 3_600_000).unref();
-  registerHostTools(server, hostPolicy, {
+  registerHostTools(tools, hostPolicy, {
     identity,
     processTasks: works,
     ...(phone ? { withCommand: <T>(operation: () => Promise<T>) => phone.maintenanceCommand(operation) } : {}),
@@ -172,18 +175,18 @@ async function main(): Promise<void> {
     }
   });
 
-  server.registerTool("list_workspaces", {
+  tools.registerTool("list_workspaces", {
     description: "Discover registered local projects before running tasks when the user provides a project name or description instead of workspace_id. Optional query filters name, path or ID by case-insensitive substring. Omit query to list all registered projects and use their names to interpret the user's meaning. Return all ambiguous candidates; ask the user when the intended project is unclear. Never invent IDs. This read-only tool only reads the workspace registry; it does not scan project files or register directories.",
     inputSchema: { query: z.string().max(256).optional() },
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false }
   }, async ({ query }) => jsonContent({ workspaces: registry.list(query) }));
 
-  registerTaskResultTools(server, works);
-  registerTaskDiscoveryTool(server, works);
+  registerTaskResultTools(tools, works);
+  registerTaskDiscoveryTool(tools, works);
 
-  registerTaskControlTool(server, works);
+  registerTaskControlTool(tools, works);
 
-  server.registerTool("bind_project", {
+  tools.registerTool("bind_project", {
     description: "Register an existing local project directory as a workspace. The path must already exist inside a configured project_root.",
     inputSchema: {
       project_path: z.string().min(1)
@@ -197,7 +200,7 @@ async function main(): Promise<void> {
     }
   });
 
-  server.registerTool("create_project", {
+  tools.registerTool("create_project", {
     description: "Create a new empty Git project directory inside a configured project_root and register it as a workspace. Only mkdir and git init are performed.",
     inputSchema: {
       parent: z.string().min(1),

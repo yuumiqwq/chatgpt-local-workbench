@@ -1,4 +1,4 @@
-import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import type { ToolRegistry } from "../api-names.js";
 import { z } from "zod";
 import { DesktopCli, desktopFailure, type DesktopEnvelope } from "./desktop-cli.js";
 import { desktopRequestWithinLimit, desktopSchemas, type DesktopTool } from "./desktop-commands.js";
@@ -43,7 +43,7 @@ export function desktopCapabilities(policy: HostPolicy) {
     automatic_retries: false, held_input: false, skill_required: false };
 }
 
-export function registerDesktopTools(server: McpServer, policy: HostPolicy,
+export function registerDesktopTools(server: ToolRegistry, policy: HostPolicy,
   audit: (entry: Record<string, unknown>) => Promise<void>, cli = new DesktopCli(policy)) {
   for (const name of desktopToolNames(policy)) {
     const readOnly = !["desktop_act", "desktop_window", "desktop_input"].includes(name) &&

@@ -1,5 +1,7 @@
 # Current MCP tools
 
+This table uses the default v1 names. The explicit [v2 name profile](api-name-profiles.md) renames eleven operations without adding aliases or changing signatures; both profiles have the same tool counts.
+
 chatgpt-local-workbench exposes durable Codex work, temporary agent execution and optional host operations. See [work management](work-management.md) for lifecycle, default full access and retention semantics.
 
 | Tool | Inputs / purpose |

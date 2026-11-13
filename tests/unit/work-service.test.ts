@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -368,4 +369,62 @@ test("legacy workspace-write setting resumes with full access while old runs rem
   await restored.waitTask(run.task_id);
   assert.equal(f.requests[0]?.sandbox, "danger-full-access");
   assert.equal(JSON.parse(readFileSync(f.path, "utf8")).works[0].access, "danger-full-access");
+});
+
+
+test("default retention bounds mixed terminal tasks, reconciles dead owners and preserves live work/history", async t => {
+  const f = await fixture(t);
+  const work = await f.service.open({ thread_id: randomUUID(), name: "retained history" });
+  f.service.finish(work.work_id, "permanent summary", ["artifact.txt"]);
+  const disk = JSON.parse(readFileSync(f.path, "utf8"));
+  const exited = spawnSync(process.execPath, ["-e", "process.stdout.write(String(process.pid))"], { windowsHide: true, encoding: "utf8" });
+  assert.equal(exited.status, 0);
+  const deadPid = Number(exited.stdout);
+  assert.ok(deadPid > 0);
+  const run = (kind: "agent" | "process", state: string, index: number, owner?: number) => ({
+    task_id: randomUUID(), kind, state,
+    created_at: new Date(Date.UTC(2000, 0, 1, 0, 0, index)).toISOString(),
+    updated_at: new Date(Date.UTC(2000, 0, 1, 0, 0, index)).toISOString(),
+    ...(kind === "process" ? { executable: process.execPath, cwd: f.root }
+      : { executor: "codex", ephemeral: false, work_id: work.work_id, thread_id: work.thread_id, access: "read-only" }),
+    ...(owner ? { owner_pid: owner } : {})
+  });
+  const terminal = Array.from({ length: 120 }, (_, index) => run(index % 2 ? "agent" : "process", index % 3 ? "completed" : "failed", index));
+  const live = [run("agent", "running", 121, process.pid), run("process", "queued", 122, process.pid)];
+  const abandoned = [run("agent", "queued", 123), run("process", "running", 124, deadPid)];
+  disk.runs = [...terminal, ...live, ...abandoned];
+  mkdirSync(f.service.resultDirectory, { recursive: true });
+  for (const entry of terminal) writeFileSync(join(f.service.resultDirectory, entry.task_id + ".json"), "{}");
+  writeFileSync(f.path, JSON.stringify(disk));
+
+  const restored = f.create(); restored.load();
+  let saved = JSON.parse(readFileSync(f.path, "utf8"));
+  assert.equal(saved.runs.filter((r: { state: string }) => ["completed", "failed"].includes(r.state)).length, 100);
+  assert.equal(restored.listTasks({ limit: 100 }).total, 102, "live tasks do not consume terminal retention slots");
+  assert.equal(readdirSync(restored.resultDirectory).length, 98, "old result files are removed with their records");
+  for (const entry of abandoned) assert.equal(restored.taskView(entry.task_id)?.error?.code, "TASK_INTERRUPTED");
+  for (const entry of live) assert.equal(restored.taskView(entry.task_id)?.state, entry.state);
+  assert.deepEqual(saved.works, disk.works, "pruning keeps work IDs, native UUIDs, summaries and references");
+  assert.deepEqual(f.nativeCalls, [], "result retention never calls native history deletion");
+
+  // Reads are projections, not pruning transactions. A sweep reconciles a newly
+  // dead owner and persists it, so the stale running record can be retained/pruned.
+  saved.runs.find((r: { task_id: string }) => r.task_id === live[1]!.task_id).owner_pid = deadPid;
+  writeFileSync(f.path, JSON.stringify(saved));
+  const beforeRead = readFileSync(f.path, "utf8");
+  assert.equal(restored.listTasks({ state: "failed" }).tasks.some(r => r.task_id === live[1]!.task_id), true);
+  assert.equal(readFileSync(f.path, "utf8"), beforeRead);
+  await restored.sweep();
+  assert.equal(restored.listTasks().total, 101);
+  saved = JSON.parse(readFileSync(f.path, "utf8"));
+  assert.equal(saved.runs.find((r: { task_id: string }) => r.task_id === live[1]!.task_id).state, "failed");
+  // Setting an age limit prunes immediately, even below the count limit.
+  restored.configureRetention({ result_days: 1 });
+  assert.equal(restored.listTasks().total, 4, "three newly interrupted tasks plus one old live owner remain");
+  assert.equal(readdirSync(restored.resultDirectory).length, 0);
+  restored.configureRetention({ max_results: 1 });
+  assert.equal(restored.listTasks().total, 2);
+  assert.equal(restored.taskView(live[0]!.task_id)?.state, "running", "no age-based deletion of a live owner");
+  assert.deepEqual(restored.list().works[0]?.previous_threads, []);
+  assert.equal(restored.list().works[0]?.thread_id, work.thread_id);
 });

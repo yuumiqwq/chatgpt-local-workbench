@@ -1,5 +1,7 @@
 # Durable work and temporary execution
 
+The examples use default v1 names. In the explicit [v2 name profile](api-name-profiles.md), use `run_agent_once`, `mark_work_complete`, `get_task` and `manage_retention` for the corresponding operations; storage and history are unchanged.
+
 chatgpt-local-workbench separates an ongoing work from each execution performed for it. The caller chooses the work, declares completion and selects retention operations; Bridge stores and carries out those decisions without classifying natural-language goals into permanent categories.
 
 ## Choosing a work

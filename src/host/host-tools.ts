@@ -1,6 +1,7 @@
+import type { ToolRegistry } from "../api-names.js";
 import { appendFile, rename, stat } from "node:fs/promises";
 import { hostname } from "node:os";
-import { ResourceTemplate, type McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { ErrorCode, McpError, type CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { VERSION } from "../version.js";
@@ -38,7 +39,7 @@ class HostAudit {
 }
 
 export function registerHostTools(
-  server: McpServer,
+  server: ToolRegistry,
   policy: HostPolicy,
   options: {
     identity?: HostIdentity;
@@ -82,6 +83,7 @@ export function registerHostTools(
     inputSchema: {}, annotations: readOnly
   }, () => jsonContent({
     server_version: VERSION,
+    api_name_profile: server.nameProfile ?? "v1",
     hostname: identity.hostname,
     ...(identity.display_name === undefined ? {} : { display_name: identity.display_name }),
     ...policy.config, policy_file: policy.policyPath,

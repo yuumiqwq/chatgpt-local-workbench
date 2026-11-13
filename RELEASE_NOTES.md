@@ -1,5 +1,12 @@
 # Release notes
 
+
+## 1.7.0-local.22 — explicit public name profiles
+
+`ENGINEERING_BRIDGE_API_NAME_PROFILE=v2` selects eleven canonical tool names through a shared registration boundary, including the standalone phone entrypoint. Default v1 retains the existing catalog; no profile registers duplicate aliases. Parameters, permissions, work/task IDs and native Codex history are unchanged. See [the exact mapping and deployment switch](docs/api-name-profiles.md).
+
+`host_capabilities` adds `api_name_profile` beside the existing package-derived `server_version`; phone status and MCP server titles identify the profile too. Both catalogs have fixed schema fixtures and a combined 128-configuration STDIO matrix. Retention regression coverage confirms the default 100-terminal-task cap, dead-owner reconciliation and preservation of live tasks and native history. Deployment and client metadata refresh remain coordinated operator actions.
+
 ## Unreleased
 
 - Ensure the official pinned agent-desktop 1.0.2 package on Windows deployment and automatic update, with local no-op checks, data-drive staging/cache, package integrity and native SHA-256 verification. Keep check mode free of installation effects; optional failures do not block Workbench, and host desktop authorization remains independent.

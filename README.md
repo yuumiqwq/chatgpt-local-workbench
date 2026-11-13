@@ -1,5 +1,7 @@
 # chatgpt-local-workbench
 
+公共工具默认保留 v1 名称；设置 `ENGINEERING_BRIDGE_API_NAME_PROFILE=v2` 可选择语义更明确的名称且不增加工具数量。参见[名称迁移与部署切换](docs/api-name-profiles.md)。
+
 此仓库面向个人使用需求：希望chat模式能够自由控制自己的电脑，自由调用本地agent作为子代理，无需经过任何审批，并且针对长时间工作时没有完成就提前终止生命周期的情况做了优化。用户只与 chat 模式交流就能完成各种事项。
 
 当前内置 Codex 和 DeepSeek Harness（DSH）两种执行器，支持项目操作、文件处理和命令执行。其他 agent 可以通过已启用的主机命令工具调用其 CLI。

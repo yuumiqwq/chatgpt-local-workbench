@@ -1,5 +1,7 @@
 ﻿# API conventions and discovery
 
+Examples below use the default v1 names. See [name profiles](api-name-profiles.md) for the implemented v2 canonical names, switch and retention boundaries.
+
 Use a small vocabulary: a **workspace** identifies a registered project directory; a **work** records durable Codex work and the caller's completion decision; a **thread** is native Codex history; a **task** is one agent or native process execution. Internal `run` records use the public `task_id`. A process has no fabricated agent access mode, work or thread.
 
 | Need | Public interface |
@@ -19,8 +21,8 @@ Use a small vocabulary: a **workspace** identifies a registered project director
 
 `control_available` indicates an active handle in this Bridge instance. Other instances sharing the same registry can observe tasks but cannot control their OS process or executor. A true value is not a promise that every control action is supported. No automatic restart, owner transfer or exactly-once start guarantee is introduced.
 
-`tools/list` is the exposed catalog. `host_capabilities` describes loaded policy and returns `server_version` from the Workbench package; the existing `version` field is the policy schema version. Package versions may span several commits, so use deployment records to establish the exact revision. `desktop.tool_names` lists the policy-selected desktop tools, while `gui_control` means that module is enabled, not that every action is allowed or the CLI is ready. Generic command tools remain listed when command execution is disabled. Document parsing follows host read policy and has no independent enable flag. Phone configuration is independent; its legacy `server_status` reports the Android adapter, not overall Bridge or tunnel health.
+`tools/list` is the exposed catalog. `host_capabilities` describes loaded policy and returns the selected `api_name_profile` plus `server_version` from the Workbench package; the existing `version` field is the policy schema version. Package versions may span several commits, so use deployment records to establish the exact revision. `desktop.tool_names` lists the policy-selected desktop tools, while `gui_control` means that module is enabled, not that every action is allowed or the CLI is ready. Generic command tools remain listed when command execution is disabled. Document parsing follows host read policy and has no independent enable flag. Phone configuration is independent; its legacy `server_status` reports the Android adapter, not overall Bridge or tunnel health.
 
-Keep existing tool names and signatures. No `get_task`, `run_agent`, `phone_status` or prefixed file aliases are added. The one new operation, `list_tasks`, fills a missing recovery path. Full connection recovery guidance lives in server instructions; task tools retain compact reminders. Mutating tool annotations are advisory; policy and executor checks enforce access.
+The default v1 catalog keeps existing names and signatures. The explicit v2 name profile uses canonical names in place of old names, never alongside them. `list_tasks` fills a missing recovery path in both profiles. Full connection recovery guidance lives in server instructions; task tools retain compact reminders. Mutating tool annotations are advisory; policy and executor checks enforce access.
 
 MCP success, terminal task state and UI delivery are separate from goal completion. Existing domains retain their response/error formats for compatibility. A final audit-log failure is reported through `_meta.audit_warning` without hiding a successful operation's normal receipt. See the [complete inventory and architecture audit](api-architecture-audit.zh-CN.md) for module boundaries, compatibility decisions and v2 proposals.
