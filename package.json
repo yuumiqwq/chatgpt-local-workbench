@@ -35,7 +35,7 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc",
+    "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc && node -e \"require('node:fs').copyFileSync('src/host/document_parser.py','dist/src/host/document_parser.py')\"",
     "test": "npm run build && node --test \"dist/tests/unit/**/*.test.js\"",
     "mcp:stdio": "node dist/src/mcp-stdio.js",
     "prepack": "npm run build"

@@ -9,6 +9,7 @@ import type { HostIdentity } from "../host-identity.js";
 import { listCodexProjects, listCodexThreads, type ThreadListQuery } from "./codex-thread-list.js";
 import { runHostCommand } from "./host-command.js";
 import { HostFiles } from "./host-files.js";
+import { readHostDocument } from "./host-documents.js";
 import { EXPORT_BUFFER_BYTES, EXPORT_CHUNK_BYTES, EXPORT_MAX_ACTIVE, EXPORT_RESOURCE_BYTES, HostExports } from "./host-exports.js";
 import { HostError, HostPolicy } from "./host-policy.js";
 import { desktopCapabilities, registerDesktopTools } from "./desktop-tools.js";
@@ -181,6 +182,17 @@ export function registerHostTools(
       // Web clients can misread JSON text's content field as an MCP envelope.
       // Explicit structured data preserves the page; retain text for existing clients.
       ...jsonContent(value), structuredContent: value
+    })));
+
+  server.registerTool("read_host_document", {
+    description: "Extract readable text from a local document as paginated Unicode character chunks without using Codex. Supports DOC, DOCX, PPTX, XLSX, XLSM, and ordinary text/CSV/HTML; PDF needs an installed PyMuPDF or pypdf, scanned PDFs need OCR. Images, embedded charts and precise layout are not reconstructed. Requires Python 3.10+ on the Workbench host. This is a read-only operation; no converted file is written.",
+    inputSchema: { path: pathSchema,
+      offset: z.number().int().min(0).default(0),
+      max_chars: z.number().int().min(1).max(40_000).default(12_000) },
+    annotations: readOnly
+  }, ({ path, offset, max_chars }, { signal }) => safe("read_document", { path }, () =>
+    readHostDocument(policy, path, offset, max_chars, signal), value => ({
+      ...jsonContent(value), structuredContent: { ...value }
     })));
 
   server.registerTool("list_host_path", {

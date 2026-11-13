@@ -60,7 +60,7 @@ Replace every directory with an existing local path. `codex_homes` identifies ac
 
 | Setting | Meaning |
 | --- | --- |
-| `enabled` | Enables the optional host/history tool group. Without it the MCP entry point exposes 14 tools instead of 24. |
+| `enabled` | Enables the optional host/history tool group. Without it the MCP entry point exposes 14 tools instead of 25. |
 | `read_roots` | Paths available to file reads, arbitrary `cwd` selection and native-history project validation. |
 | `export_roots` | Explicit file-delivery directories within read_roots. Empty by default; whole volumes and linked directories are rejected. Enables three export tools and the MCP file resource template. |
 | `export_max_bytes`, `export_ttl_seconds` | Per-export size limit defaults to and permits at most 512,000,000 bytes (decimal 512 MB); lifetime 30–3600 seconds, default 3600. Existing explicit values require an administrator update and later restart. See [file delivery](file-exports.md). |
@@ -70,6 +70,8 @@ Replace every directory with an existing local path. `codex_homes` identifies ac
 | `codex_homes` | Profiles used for history listing and verified rollout lookup. The first is the default home for new work. |
 | `protected_paths` | Additional paths blocked from host file writes. |
 | `follow_links` | Defaults to false, rejecting links in ordinary host paths. Keep false unless the linked layout has been reviewed. |
+
+The read-only `read_host_document` tool extracts plain text through Workbench's bundled parser and returns `content`, `total_chars`, `next_offset`, and `warnings` directly to the caller. It enforces `read_roots` even when host commands are disabled and writes no converted files. On Windows it uses the local Python launcher (`py -3`), and on other platforms `python3`, requiring Python 3.10+. Text, HTML, CSV, old Word DOC, DOCX, PPTX, and XLSX are supported by the standard library; PDF text requires PyMuPDF or pypdf, while scans and complex figure/slide layouts need a separate OCR or visual inspection workflow. Older PPT and XLS files should be converted to modern formats first. The installed Python program is bundled in `dist/src/host/document_parser.py` during build and deployment.
 
 Host file tools exclude credential locations and protect the host policy itself from writes. A replacement or file deletion requires the current SHA-256; new copies and text creation refuse to overwrite an existing destination. Limits are 512 MiB per regular file, 2 MiB per text write and 256 KiB per read chunk. These checks coordinate mutations inside one Bridge process and do not provide atomic protection from all external writers.
 
