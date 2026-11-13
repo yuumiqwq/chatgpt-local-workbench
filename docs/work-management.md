@@ -22,7 +22,7 @@ Bridge serializes preparation inside its process and checks queued/running recor
 
 ## Temporary work
 
-`run_temp` accepts a general instruction for any one-off use. An optional `work_id` associates the result with a work, without including or replacing that work's native history. It can inspect a repository, draft a patch, or modify project files according to its access setting.
+`run_temp` accepts a general instruction for a one-off agent execution. Ordinary native commands use `run_host_command` or `start_host_process`, without an agent; see [native processes](native-processes.md). An optional `work_id` associates the result with a work, without including or replacing that work's native history. It can inspect a repository, draft a patch, or modify project files according to its access setting.
 
 Both `executor: "codex"` and `executor: "dsh"` accept `access: "read-only"` or `access: "danger-full-access"`. Omitting executor selects Codex, and omitting access selects full access for either executor, including calls associated with a read-only work. Supply access explicitly when the temporary run must be read-only; this per-call setting does not change the associated work's stored access.
 
@@ -38,7 +38,7 @@ Editing, validation and Git operations use `continue_work` or `run_temp`. A read
 
 `wait_task` waits up to 300 seconds per call by default. A timeout returns current status; when `ready=false`, the caller should issue another wait. The maximum wait is configurable and remains independent from executor timeouts. Cancelling a wait leaves the execution running. These mechanics do not guarantee that ChatGPT itself will continue making calls after ending its response.
 
-`control_task` offers `steer` and `interrupt`. Successful new executions directly become `completed` and expose `output`. `task_result` reads retained executions in the work registry.
+`control_task` offers `steer` and `interrupt`. Successful agent executions directly become `completed` and expose `output`; native process tasks expose their actual exit outcome and bounded streams under `process`, and support interrupt only. `task_result` reads retained executions in the work registry.
 
 Execution completion and goal completion are different facts. `finish_work` records the caller's completion decision with a summary and references. `open_work` can subsequently reopen it.
 

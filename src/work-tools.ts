@@ -18,7 +18,7 @@ export function registerWorkTools(server: McpServer, works: WorkService) {
     }) }] }; }
   };
   server.registerTool("list_work", {
-    description: "Find durable work IDs by project, name, status or summary. Names are searchable labels, not unique routing keys. Pagination uses offset. Omit archived to include all records. last_run reports process completion; work status records the caller's semantic completion decision.",
+    description: "Find durable Codex work IDs by project, name, status or summary. Names are searchable labels, not unique routing keys. Pagination uses offset. Omit archived to include all records. last_run reports agent execution completion; work status records the caller's semantic completion decision. Native processes are inspected by task_id through task_result.",
     inputSchema: { query: text.optional(), workspace_id: text.optional(), cwd: text.optional(),
       status: z.enum(["active", "completed"]).optional(), archived: z.boolean().optional(),
       offset: z.number().int().min(0).default(0), limit: z.number().int().min(1).max(100).default(20) },
@@ -34,7 +34,7 @@ export function registerWorkTools(server: McpServer, works: WorkService) {
     inputSchema: { work_id: id, ...turn }
   }, ({ work_id, ...args }) => safe(() => works.continue(work_id, args)));
   server.registerTool("run_temp", {
-    description: `Run any one-off instruction, including inspection or file editing, without persisting a native Codex conversation. Can invoke locally available OpenCLI for web/social-media search or browser operations, and MinerU for PDF parsing/OCR; follow server instructions for discovery. Supply work_id, workspace_id or cwd. Optional work association does not reuse its history or access setting. Codex uses ephemeral app-server mode; DSH uses its headless executor. Both accept read-only or danger-full-access, defaulting to danger-full-access with OS account privileges and no extra approval prompt. Access is passed to the selected executor's native permission policy. Saves the result separately under the registry's .results directory, subject to retention. Save lasting artifacts in the project and reference them in finish_work. wait_task cancellation does not stop execution. ${CONNECTION_RECOVERY_INSTRUCTIONS}`,
+    description: `Run a one-off agent instruction using Codex or DSH, including inspection or file editing, without persisting a native Codex conversation. For ordinary native commands use run_host_command or start_host_process. Can invoke locally available OpenCLI for web/social-media search or browser operations, and MinerU for PDF parsing/OCR; follow server instructions for discovery. Supply work_id, workspace_id or cwd. Optional work association does not reuse its history or access setting. Codex uses ephemeral app-server mode; DSH uses its headless executor. Both accept read-only or danger-full-access, defaulting to danger-full-access with OS account privileges and no extra approval prompt. Access is passed to the selected executor's native permission policy. Saves the result separately under the registry's .results directory, subject to retention. Save lasting artifacts in the project and reference them in finish_work. wait_task cancellation does not stop execution. ${CONNECTION_RECOVERY_INSTRUCTIONS}`,
     inputSchema: { work_id: id.optional(), workspace_id: text.optional(), cwd: text.optional(),
       executor: z.enum(["codex", "dsh"]).default("codex"), ...turn }
   }, args => safe(() => works.temp(args)));

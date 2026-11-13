@@ -20,7 +20,7 @@ import { PHONE_INSTRUCTIONS, PHONE_EFFICIENCY_INSTRUCTIONS, registerPhoneTools }
 import { buildServerInstructions } from "./server-instructions.js";
 import { loadHostIdentity } from "./host-identity.js";
 import { CoreError, serializeError } from "./core/errors.js";
-import { registerTaskResultTools } from "./task-result-tools.js";
+import { registerTaskControlTool, registerTaskResultTools } from "./task-result-tools.js";
 import { HostError, HostPolicy } from "./host/host-policy.js";
 import { registerHostTools } from "./host/host-tools.js";
 import { DESKTOP_INSTRUCTIONS } from "./host/desktop-tools.js";
@@ -91,13 +91,6 @@ function jsonContent(value: unknown) {
   };
 }
 
-function unknownTask() {
-  return {
-    isError: true,
-    ...jsonContent({ error: "UNKNOWN_TASK" })
-  };
-}
-
 async function main(): Promise<void> {
   if (process.argv.length !== 3) {
     throw new Error("Usage: node dist/src/mcp-stdio.js /absolute/path/to/workspaces.json");
@@ -159,6 +152,7 @@ async function main(): Promise<void> {
   setInterval(() => { void sweep(); }, 3_600_000).unref();
   registerHostTools(server, hostPolicy, {
     identity,
+    processTasks: works,
     ...(phone ? { withCommand: <T>(operation: () => Promise<T>) => phone.maintenanceCommand(operation) } : {}),
     validateText: (path, content) => {
       if (relative(canonicalConfigPath, path) === "") parseWorkspaceConfig(content);
@@ -186,22 +180,7 @@ async function main(): Promise<void> {
 
   registerTaskResultTools(server, works);
 
-  server.registerTool("control_task", {
-    description: "Steer or interrupt a running execution. Use continue_work for the next turn and finish_work for semantic completion.",
-    inputSchema: {
-      task_id: z.string(),
-      action: z.enum(["steer", "interrupt"]),
-      instruction: z.string().optional()
-    }
-  }, async ({ task_id, action, instruction }) => {
-    if (works.taskView(task_id) === undefined) return unknownTask();
-    try {
-      const view = await works.controlTask(task_id, action, instruction);
-      return jsonContent({ task_id: view.taskId, state: view.state });
-    } catch (error) {
-      return { isError: true, ...jsonContent({ error: serializeError(error) }) };
-    }
-  });
+  registerTaskControlTool(server, works);
 
   server.registerTool("bind_project", {
     description: "Register an existing local project directory as a workspace. The path must already exist inside a configured project_root.",
@@ -230,6 +209,19 @@ async function main(): Promise<void> {
     }
   });
 
+  const onclose = server.server.onclose;
+  server.server.onclose = () => {
+    void works.shutdownHostProcesses();
+    onclose?.();
+  };
+  // The STDIO transport does not turn stdin EOF into onclose itself. Without
+  // this hook a live supervisor keeps Bridge alive until clients force-kill it.
+  process.stdin.once("end", () => { void server.close(); });
+  // Closing STDIO and ordinary termination clean up native tasks. An abrupt
+  // Bridge death also closes each supervisor's IPC, independently of handlers.
+  for (const signal of ["SIGINT", "SIGTERM"] as const) process.once(signal, () => {
+    void works.shutdownHostProcesses().finally(() => process.exit(0));
+  });
   await server.connect(new StdioServerTransport());
 }
 

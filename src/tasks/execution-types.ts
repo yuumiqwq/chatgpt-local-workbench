@@ -1,12 +1,15 @@
 import type { Id } from "../core/ids.js";
 import type { SerializedError } from "../core/errors.js";
 import type { Executor, ExecutorActivity, ExecutorDiagnostics, ExecutorEvidence, SandboxMode } from "../executors/executor.js";
+import type { ProcessView } from "../host/process-runtime.js";
 
 export type ExecutorName = "codex" | "dsh";
 export type ExecutorFactory = (executor: ExecutorName, workspaceRoot: string, codexHome?: string) => Executor;
 export interface TaskView {
   readonly taskId: Id;
   readonly state: "queued" | "running" | "completed" | "failed";
+  readonly kind?: "agent" | "process";
+  readonly process?: ProcessView;
   readonly access?: SandboxMode;
   readonly executor?: ExecutorName;
   readonly threadId?: string;

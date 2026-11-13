@@ -12,6 +12,9 @@ import { HostError, HostPolicy } from "../host/host-policy.js";
 import { locateCodexSession } from "../host/codex-sessions.js";
 import { queryCodexThread } from "../host/codex-thread-list.js";
 import { DEFAULT_WAIT_TASK_TIMEOUT_SECONDS, waitTaskMaxTimeoutSeconds } from "../runtime-config.js";
+import { validateHostCommand } from "../host/host-command.js";
+import { superviseProcess } from "../host/host-process.js";
+import { MAX_HOST_PROCESSES, MAX_PROCESS_TIMEOUT_SECONDS, type ProcessRequest, type ProcessView } from "../host/process-runtime.js";
 
 const WorkSchema = z.object({
   work_id: z.string().uuid(), name: z.string(), cwd: z.string(), workspace_id: z.string().optional(),
@@ -24,7 +27,8 @@ const WorkSchema = z.object({
   references: z.array(z.string()).default([]), last_task_id: z.string().optional()
 });
 export type Work = z.infer<typeof WorkSchema>;
-const RunSchema = z.object({
+const AgentRunSchema = z.object({
+  kind: z.literal("agent").default("agent"),
   task_id: z.string().uuid(), work_id: z.string().uuid().optional(), ephemeral: z.boolean(),
   executor: z.enum(["codex", "dsh"]), state: z.enum(["queued", "running", "completed", "failed"]),
   access: z.enum(["read-only", "workspace-write", "danger-full-access"]), created_at: z.string(), updated_at: z.string(),
@@ -36,6 +40,14 @@ const RunSchema = z.object({
   }).optional(),
   owner_pid: z.number().int().positive().optional()
 });
+// Keep process fields separate from legacy agent access/thread/work metadata.
+const ProcessRunSchema = AgentRunSchema.pick({ task_id: true, state: true, created_at: true,
+  updated_at: true, owner_pid: true, error: true }).extend({
+  kind: z.literal("process"), executable: z.string(), cwd: z.string()
+});
+const RunSchema = z.union([AgentRunSchema, ProcessRunSchema]);
+type AgentRun = z.infer<typeof AgentRunSchema>;
+type ProcessRun = z.infer<typeof ProcessRunSchema>;
 type Run = z.infer<typeof RunSchema>;
 const RetentionSchema = z.object({
   max_results: z.number().int().min(1).max(1000).default(100),
@@ -62,6 +74,9 @@ export class WorkService {
   private runs = new Map<string, Run>();
   private live = new Map<string, { executor: Executor; evidence?: TaskView["evidence"]; activity?: ExecutorActivity; startedAtMs: number }>();
   private preparing = new Set<string>();
+  private processes = new Map<string, ReturnType<typeof superviseProcess>>();
+  private preparingProcesses = 0;
+  private closingProcesses = false;
   private retention = RetentionSchema.parse({});
   private savedWorks = new Map<string, string>();
   private savedRuns = new Map<string, string>();
@@ -95,17 +110,35 @@ export class WorkService {
     }
     this.works = works;
     for (const run of data.runs) {
-      if (!this.live.has(run.task_id)) this.runs.set(run.task_id, run);
+      if (!this.live.has(run.task_id) && !this.processes.has(run.task_id)) this.runs.set(run.task_id, run);
     }
     const ids = new Set(data.runs.map(run => run.task_id));
-    for (const id of this.runs.keys()) if (!ids.has(id) && !this.live.has(id)) this.runs.delete(id);
+    for (const id of this.runs.keys()) if (!ids.has(id) && !this.live.has(id) && !this.processes.has(id)) this.runs.delete(id);
     this.retention = data.retention;
     this.remember();
     for (const run of this.runs.values()) {
+      // A final snapshot is committed before registry metadata. Recover that
+      // observed outcome if the owner died or registry persistence failed in
+      // the interval; an old running snapshot cannot establish an exit.
+      if (run.kind === "process" && !this.processes.has(run.task_id) &&
+          (run.state === "queued" || run.state === "running")) {
+        try {
+          const result = JSON.parse(readFileSync(join(this.resultDirectory, run.task_id + ".json"), "utf8")) as TaskView;
+          if (result.kind === "process" && result.taskId === run.task_id && result.ready && (result.process?.ended_at || result.process?.outcome_unknown) &&
+              (result.state === "completed" || result.state === "failed")) {
+            run.state = result.state; run.updated_at = result.process.ended_at ?? now();
+            if (result.error) run.error = result.error;
+          }
+        } catch (error) {
+          if (!["ENOENT", "ENOTDIR"].includes((error as NodeJS.ErrnoException).code ?? "")) throw error;
+        }
+      }
       if ((run.state === "queued" || run.state === "running") &&
           (run.owner_pid === undefined || !processIsAlive(run.owner_pid))) {
         run.state = "failed";
-        run.error = { code: "TASK_INTERRUPTED", message: "Bridge restarted; prior execution is no longer monitored. Check files and other clients before continuing." };
+        run.error = { code: "TASK_INTERRUPTED", message: run.kind === "process"
+          ? "Bridge owner exited; the supervisor attempts cleanup. Exit outcome is unknown; inspect artifacts before explicitly starting another process."
+          : "Bridge restarted; prior execution is no longer monitored. Check files and other clients before continuing." };
         run.updated_at = now();
       }
     }
@@ -143,11 +176,11 @@ export class WorkService {
   }
   private busy(id: string) {
     return this.preparing.has(id) || [...this.runs.values()].some(run =>
-      run.work_id === id && (run.state === "running" || run.state === "queued"));
+      run.kind === "agent" && run.work_id === id && (run.state === "running" || run.state === "queued"));
   }
   hasPendingTasks() {
     this.refresh();
-    return this.preparing.size > 0 || [...this.runs.values()].some(run => run.state === "queued" || run.state === "running");
+    return this.preparing.size > 0 || this.preparingProcesses > 0 || [...this.runs.values()].some(run => run.state === "queued" || run.state === "running");
   }
 
   list(options: { query?: string | undefined; cwd?: string | undefined; workspace_id?: string | undefined;
@@ -167,8 +200,12 @@ export class WorkService {
   }
   private view(work: Work) {
     return { ...work, running: this.busy(work.work_id),
-      last_run: work.last_task_id ? this.runs.get(work.last_task_id) ?? null : null,
+      last_run: work.last_task_id ? this.agentRun(work.last_task_id) : null,
       activity_in_other_clients: "unknown" };
+  }
+  private agentRun(id: string) {
+    const run = this.runs.get(id);
+    return run?.kind === "agent" ? run : null;
   }
 
   async open(options: { work_id?: string | undefined; thread_id?: string | undefined; name?: string | undefined;
@@ -258,10 +295,106 @@ export class WorkService {
       result_file: join(this.resultDirectory, run.task_id + ".json") };
   }
 
+  async startHostProcess(options: ProcessRequest,
+    withCommand?: <T>(operation: () => Promise<T>) => Promise<T>, signal?: AbortSignal) {
+    if (this.closingProcesses) problem("HOST_PROCESS_CLOSING", "Bridge is shutting down host processes.");
+    if (this.processes.size + this.preparingProcesses >= MAX_HOST_PROCESSES) {
+      problem("HOST_PROCESS_LIMIT", "This Bridge already has the maximum number of active host processes.");
+    }
+    this.preparingProcesses++;
+    let reserved = true;
+    const release = () => { if (reserved) { reserved = false; this.preparingProcesses--; } };
+    try {
+      if (options.timeout_seconds !== undefined && (!Number.isFinite(options.timeout_seconds) ||
+          options.timeout_seconds < 1 || options.timeout_seconds > MAX_PROCESS_TIMEOUT_SECONDS)) {
+        problem("HOST_INVALID_ARGUMENT", "Process timeout must be from 1 to 604800 seconds, or omitted.");
+      }
+      const checked = await validateHostCommand(this.policy, options.executable, options.args, options.cwd);
+      const request: ProcessRequest = { ...checked,
+        ...(options.timeout_seconds === undefined ? {} : { timeout_seconds: options.timeout_seconds }) };
+      signal?.throwIfAborted();
+      return await new Promise<{ task_id: string; kind: "process"; result_file: string }>((resolve, reject) => {
+        let scheduled = false;
+        // The maintenance guard, if configured, must cover the whole execution,
+        // not just the quick start response. Releasing it early permits races.
+        const operation = async () => {
+          signal?.throwIfAborted();
+          if (this.closingProcesses) problem("HOST_PROCESS_CLOSING", "Bridge is shutting down host processes.");
+          const timestamp = now();
+          const run: ProcessRun = { kind: "process", task_id: newId(), state: "queued",
+            executable: request.executable, cwd: request.cwd,
+            created_at: timestamp, updated_at: timestamp, owner_pid: process.pid };
+          this.runs.set(run.task_id, run);
+          try { this.save(); }
+          catch (error) { this.runs.delete(run.task_id); throw error; }
+          let persistenceFailed = false;
+          let execution: ReturnType<typeof superviseProcess>;
+          try {
+            execution = superviseProcess(request, processView => {
+              if (persistenceFailed) return;
+              try {
+                if (processView.pid !== undefined && run.state === "queued") {
+                  run.state = "running"; run.updated_at = now(); this.save();
+                }
+                atomicJson(join(this.resultDirectory, run.task_id + ".json"), this.processTaskView(run, processView));
+              } catch {
+                persistenceFailed = true;
+                execution.stop("shutdown");
+              }
+            });
+          } catch (error) {
+            run.state = "failed"; run.error = serializeError(new CoreError("HOST_PROCESS_START_FAILED"));
+            this.save(); throw error;
+          }
+          this.processes.set(run.task_id, execution);
+          scheduled = true;
+          release();
+          // After this point a cancelled/lost start response must not kill or
+          // replay the execution. Control it by task_id on this owner instance.
+          resolve({ task_id: run.task_id, kind: "process", result_file: join(this.resultDirectory, run.task_id + ".json") });
+          try {
+            const result = await execution.done;
+            run.state = result.exit_code === 0 && !result.stop_reason && !result.spawn_failed && !result.outcome_unknown
+              ? "completed" : "failed";
+            const code = persistenceFailed ? "WORK_RESULT_WRITE_FAILED" : result.outcome_unknown ? "HOST_PROCESS_OUTCOME_UNKNOWN"
+              : result.spawn_failed ? "HOST_PROCESS_START_FAILED" : result.timed_out ? "EXECUTION_DEADLINE_EXCEEDED"
+              : result.cancelled ? "TASK_INTERRUPTED" : run.state === "failed" ? "HOST_PROCESS_FAILED" : undefined;
+            if (code) { run.state = "failed"; run.error = serializeError(new CoreError(code)); }
+            run.updated_at = now();
+            try { atomicJson(join(this.resultDirectory, run.task_id + ".json"), this.processTaskView(run, result)); }
+            catch { run.state = "failed"; run.error = serializeError(new CoreError("WORK_RESULT_WRITE_FAILED")); }
+            this.pruneResults(); this.save();
+          } finally { this.processes.delete(run.task_id); }
+        };
+        void (withCommand ? withCommand(operation) : operation()).catch(error => {
+          release(); reject(error);
+          // A post-start persistence failure cannot be returned through the
+          // already completed start call; keep the in-memory terminal record.
+          if (scheduled) process.stderr.write("Host process operation failed: " + (error instanceof Error ? error.name : "Error") + "\n");
+        });
+      });
+    } finally { release(); }
+  }
+
+  private processTaskView(run: ProcessRun, processView?: ProcessView): TaskView {
+    return { taskId: run.task_id as ReturnType<typeof newId>, kind: "process", state: run.state,
+      ready: run.state === "completed" || run.state === "failed",
+      ...(processView ? { process: processView,
+        elapsed_seconds: Math.max(0, (Date.parse(processView.ended_at ?? (run.state === "completed" || run.state === "failed" ? run.updated_at : now())) - Date.parse(processView.started_at)) / 1000) } : {}),
+      ...(run.error ? { error: run.error as TaskView["error"] } : {}) };
+  }
+
+  async shutdownHostProcesses() {
+    this.closingProcesses = true;
+    const executions = [...this.processes.values()];
+    for (const execution of executions) execution.stop("shutdown");
+    await Promise.all(executions.map(execution => execution.done));
+  }
+
   private start(cwd: string, home: string, options: TurnOptions, access: Exclude<SandboxMode, "workspace-write">,
     executor: ExecutorName, ephemeral: boolean, work?: Work, rolloutPath?: string) {
     const timestamp = now();
-    const run: Run = { task_id: newId(), ...(work ? { work_id: work.work_id } : {}),
+    const run: AgentRun = { kind: "agent", task_id: newId(), ...(work ? { work_id: work.work_id } : {}),
       ephemeral, executor, access, state: "queued", created_at: timestamp, updated_at: timestamp, owner_pid: process.pid };
     this.runs.set(run.task_id, run);
     if (work) { work.last_task_id = run.task_id; work.updated_at = timestamp; }
@@ -272,7 +405,7 @@ export class WorkService {
     return run;
   }
 
-  private async execute(run: Run, cwd: string, home: string, options: TurnOptions, work?: Work, rolloutPath?: string) {
+  private async execute(run: AgentRun, cwd: string, home: string, options: TurnOptions, work?: Work, rolloutPath?: string) {
     let view: TaskView;
     try {
       run.state = "running"; this.save();
@@ -336,12 +469,26 @@ export class WorkService {
     if (typeof taskId !== "string") return undefined;
     const run = this.runs.get(taskId);
     if (!run) return undefined;
+    if (run.kind === "process") {
+      let processView = this.processes.get(taskId)?.snapshot();
+      if (!processView && run.error?.code !== "WORK_RESULT_WRITE_FAILED") {
+        try { processView = (JSON.parse(readFileSync(join(this.resultDirectory, taskId + ".json"), "utf8")) as TaskView).process; }
+        catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+      }
+      // A stale running snapshot is useful output, never evidence of an exit.
+      if (run.state === "failed" && !processView?.ended_at) {
+        processView = { executable: run.executable, cwd: run.cwd, started_at: run.created_at,
+          exit_code: null, signal: null, stdout: "", stderr: "", truncated: false, timed_out: false,
+          cancelled: false, ...processView, outcome_unknown: true };
+      }
+      return this.processTaskView(run, processView);
+    }
     if ((run.state === "completed" || run.state === "failed") && run.error?.code !== "WORK_RESULT_WRITE_FAILED") {
-      try { return JSON.parse(readFileSync(join(this.resultDirectory, taskId + ".json"), "utf8")); }
+      try { return { ...JSON.parse(readFileSync(join(this.resultDirectory, taskId + ".json"), "utf8")), kind: "agent" }; }
       catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
     }
     const live = this.live.get(taskId);
-    return { taskId: taskId as ReturnType<typeof newId>, state: run.state,
+    return { taskId: taskId as ReturnType<typeof newId>, kind: "agent", state: run.state,
       executor: run.executor, access: run.access, ready: run.state === "completed" || run.state === "failed",
       ...(run.thread_id ? { threadId: run.thread_id } : {}),
       ...(run.error ? { error: run.error as TaskView["error"] } : {}),
@@ -360,6 +507,14 @@ export class WorkService {
     }
   }
   async controlTask(id: unknown, action: "steer" | "interrupt", instruction?: string) {
+    const processRun = typeof id === "string" ? this.runs.get(id) : undefined;
+    if (processRun?.kind === "process") {
+      if (action === "steer") throw new CoreError("UNSUPPORTED_ACTION");
+      const execution = this.processes.get(id as string);
+      if (!execution) problem("TASK_NOT_RUNNING", "The process is not running in this Bridge instance.");
+      execution.stop();
+      return this.taskView(id)!;
+    }
     const live = typeof id === "string" ? this.live.get(id) : undefined;
     if (!live) problem("TASK_NOT_RUNNING", "The task is not currently executing.");
     if (action === "interrupt") {

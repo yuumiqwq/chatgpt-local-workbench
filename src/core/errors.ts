@@ -18,6 +18,9 @@ export const ERROR_CODES = [
   "DSH_EXECUTION_FAILED",
   "TASK_INTERRUPTED",
   "WORK_RESULT_WRITE_FAILED",
+  "HOST_PROCESS_FAILED",
+  "HOST_PROCESS_START_FAILED",
+  "HOST_PROCESS_OUTCOME_UNKNOWN",
   "UNSUPPORTED_ACTION"
 ] as const;
 
@@ -59,6 +62,9 @@ const ERROR_MESSAGES: Readonly<Record<ErrorCode, string>> = {
   DSH_EXECUTION_FAILED: "DSH execution failed.",
   TASK_INTERRUPTED: "The task was interrupted.",
   WORK_RESULT_WRITE_FAILED: "Execution ended but its result could not be persisted. Check project files before retrying.",
+  HOST_PROCESS_FAILED: "The host process exited with a nonzero code or signal.",
+  HOST_PROCESS_START_FAILED: "The host process could not be started.",
+  HOST_PROCESS_OUTCOME_UNKNOWN: "The process supervisor exited without reporting an outcome. Inspect artifacts and running processes before retrying.",
   UNSUPPORTED_ACTION: "The requested action is not supported."
 };
 

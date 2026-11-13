@@ -26,6 +26,7 @@ flowchart LR
 | 能力 | 当前实现 |
 | --- | --- |
 | 持续处理一个事项 | `open_work` 建立或接管工作，`continue_work` 复用原生 Codex UUID 和历史。工作编号及摘要可跨 Bridge 重启保留。 |
+| 本机长进程 | `start_host_process` 直接运行命令，无需模型；通过返回的 `task_id` 共用结果查询、等待和中断接口。 |
 | 临时调用 agent | `run_temp` 选择 Codex 或 DSH，执行一次指令并单独保存结果。Codex 临时执行不保存原生对话。 |
 | 查找项目和历史 | 根据名称或目录查找工作区，通过已配置的 Codex home 查找项目和原生会话。 |
 | 直接操作本机 | 执行器可修改文件并运行 Git、网络命令；可选主机工具提供文件读写与显式命令执行。 |
@@ -82,6 +83,8 @@ ChatGPT 可以通过 Secure MCP Tunnel 连接此 STDIO 服务，也可以连接�
 
 ## 权限与安全边界
 
+短时间版本查询或状态检查使用 `run_host_command`，最多运行 45 秒；长时间转换、构建或训练使用 `start_host_process`，传入绝对可执行文件路径、参数数组和明确的工作目录，省略执行期限时允许持续运行。需要 agent 推理或编辑时使用 `run_temp`，需要保留 Codex 上下文时使用 `continue_work`。示例及权限、重启语义见[本机进程说明](docs/native-processes.zh-CN.md)。
+
 新工作和 `run_temp` 默认采用 `danger-full-access`，按当前操作系统账户权限修改文件、操作 Git 并访问网络，Bridge 不增加执行审批环节。`continue_work` 使用工作中保存的权限，显式覆盖后会保存为后续轮次的权限；`run_temp` 独立选择权限，即使关联只读工作，省略 `access` 仍为完全访问。
 
 Codex 的 `read-only` 使用原生只读策略并关闭网络，DSH 的同名选项交给其原生权限策略处理，网络及系统隔离能力与 Codex 不同。主机文件工具受 host policy 的路径范围和摘要检查约束，主机命令的 `cwd` 只限定起始目录；这些文件规则不会限制独立的完全访问执行器。
@@ -90,7 +93,7 @@ Codex 的 `read-only` 使用原生只读策略并关闭网络，DSH 的同名选
 
 ## 接口与维护
 
-基础 MCP 入口在 host policy 开启时提供 24 个工具，另外配置 `export_roots` 后提供 27 个工具，关闭 host policy 时提供 14 个工具；可选桌面和手机模块按本机策略增加工具。完整参数见[工具清单](docs/tools.md)，各模块关系见[架构](docs/architecture.md)，配置及环境变量见[部署配置](docs/host-operations.md)。
+基础 MCP 入口在 host policy 开启时提供 26 个工具，另外配置 `export_roots` 后提供 29 个工具，关闭 host policy 时提供 14 个工具；可选桌面和手机模块按本机策略增加工具。完整参数见[工具清单](docs/tools.md)，各模块关系见[架构](docs/architecture.md)，配置及环境变量见[部署配置](docs/host-operations.md)。
 
 修改后执行以下验证。`npm test` 自带一次构建，额外的 `build` 可独立确认最终输出；测试使用临时目录和模拟执行器，不需要运行付费模型。
 

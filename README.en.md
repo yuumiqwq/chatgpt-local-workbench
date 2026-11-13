@@ -13,6 +13,7 @@ ChatGPT interprets the request, selects tools and decides when the goal is compl
 | Capability | Implementation |
 | --- | --- |
 | Ongoing work | `open_work` creates or adopts work; `continue_work` reuses its native Codex UUID and history. Work IDs and summaries survive Bridge restarts. |
+| Native process tasks | `start_host_process` starts long commands without a model; `task_result`, `wait_task` and `control_task` share the returned `task_id`. |
 | Temporary agent calls | `run_temp` selects Codex or DSH and saves a separate result. Codex temporary runs do not persist native conversations. |
 | Project and history discovery | Search registered workspaces and browse project/thread metadata in configured Codex homes. |
 | Computer tasks | Executors can edit files and use Git or network commands. Optional host tools provide direct file and command operations. |
@@ -66,6 +67,8 @@ Start with `list_workspaces` and use an actual returned `workspace_id`. Resolve 
 
 Each `wait_task` call waits at most 300 seconds by default; call it again when `ready=false`. The maximum is configurable without affecting executor liveness. A completed execution does not establish that the goal succeeded. Interruption, timeout and the chat ending do not undo file changes. See [work management](docs/work-management.md) for state and retention details.
 
+For a short version/status check use `run_host_command`, with its 45-second maximum. For a long conversion, build or training script use `start_host_process` with an absolute executable, argument array and explicit cwd; no execution deadline applies unless supplied. Use `run_temp` when an agent must reason or edit, and `continue_work` when it needs retained Codex context. See [native process examples, security and shutdown behavior](docs/native-processes.md).
+
 ## Permissions and boundaries
 
 New work and `run_temp` default to `danger-full-access`, using the current OS account's file, Git and network privileges without an additional Bridge execution approval step. `continue_work` inherits the stored work access and saves explicit overrides for later turns. Temporary runs select access independently: associating a read-only work does not change the full-access default of `run_temp`.
@@ -76,7 +79,7 @@ This is a direct-execution service for trusted personal use. Access to its tools
 
 ## Interfaces and maintenance
 
-The base MCP entry point exposes 24 tools when host operations are enabled, 27 with separately authorized `export_roots`, and 14 when host operations are disabled. Optional desktop and phone modules add tools according to local policy. `export_host_file` returns metadata and an MCP resource link for verified binary transfer and delivery through the client's native chat attachments. See [file delivery and client limitations](docs/file-exports.md), the [tool reference](docs/tools.md), [architecture](docs/architecture.md) and [deployment settings](docs/host-operations.md).
+The base MCP entry point exposes 26 tools when host operations are enabled, 29 with separately authorized `export_roots`, and 14 when host operations are disabled. Optional desktop and phone modules add tools according to local policy. `export_host_file` returns metadata and an MCP resource link for verified binary transfer and delivery through the client's native chat attachments. See [file delivery and client limitations](docs/file-exports.md), the [tool reference](docs/tools.md), [architecture](docs/architecture.md) and [deployment settings](docs/host-operations.md).
 
 Run these checks after changes. Tests build the project and use temporary fixtures or simulated executors without paid model calls; the separate build verifies the final output independently.
 

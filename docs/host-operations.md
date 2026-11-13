@@ -60,7 +60,7 @@ Replace every directory with an existing local path. `codex_homes` identifies ac
 
 | Setting | Meaning |
 | --- | --- |
-| `enabled` | Enables the optional host/history tool group. Without it the MCP entry point exposes 14 tools instead of 25. |
+| `enabled` | Enables the optional host/history tool group. Without it the MCP entry point exposes 14 tools instead of 26. |
 | `read_roots` | Paths available to file reads, arbitrary `cwd` selection and native-history project validation. |
 | `export_roots` | Explicit file-delivery directories within read_roots. Empty by default; whole volumes and linked directories are rejected. Enables three export tools and the MCP file resource template. |
 | `export_max_bytes`, `export_ttl_seconds` | Per-export size limit defaults to and permits at most 512,000,000 bytes (decimal 512 MB); lifetime 30–3600 seconds, default 3600. Existing explicit values require an administrator update and later restart. See [file delivery](file-exports.md). |
@@ -75,7 +75,7 @@ The read-only `read_host_document` tool extracts plain text through Workbench's 
 
 Host file tools exclude credential locations and protect the host policy itself from writes. A replacement or file deletion requires the current SHA-256; new copies and text creation refuse to overwrite an existing destination. Limits are 512 MiB per regular file, 2 MiB per text write and 256 KiB per read chunk. These checks coordinate mutations inside one Bridge process and do not provide atomic protection from all external writers.
 
-`run_host_command` requires an absolute executable and an argument array. It uses no implicit shell, allows 1–45 seconds and captures at most 65,536 bytes across stdout/stderr. On Windows use a real `.exe` or `.com`; invoke a script through an explicit interpreter. Cancellation stops the command, while cancellation of `wait_task` leaves an agent execution running.
+`run_host_command` requires an absolute executable and an argument array. It uses no implicit shell, allows 1–45 seconds and captures at most 65,536 bytes across stdout/stderr. On Windows use a real `.exe` or `.com`; invoke a script through an explicit interpreter. Cancellation stops the command, while cancellation of `wait_task` leaves an agent or native process execution running. `start_host_process` uses the same command authorization and executable/cwd validation for asynchronous native execution, returning a `task_id` for the existing task interfaces. See [native process operations](native-processes.md) for output bounds, execution deadlines, supervisor cleanup and restart semantics.
 
 Processes started directly by Bridge use hidden console windows on Windows. An executor can still explicitly start an application or open a window. Direct desktop operations use the optional [agent-desktop tool group](desktop.md) in this same server, enabled independently of host commands.
 

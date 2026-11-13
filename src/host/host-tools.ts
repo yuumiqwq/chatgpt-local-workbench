@@ -13,6 +13,9 @@ import { readHostDocument } from "./host-documents.js";
 import { EXPORT_BUFFER_BYTES, EXPORT_CHUNK_BYTES, EXPORT_MAX_ACTIVE, EXPORT_RESOURCE_BYTES, HostExports } from "./host-exports.js";
 import { HostError, HostPolicy } from "./host-policy.js";
 import { desktopCapabilities, registerDesktopTools } from "./desktop-tools.js";
+import type { WorkService } from "../tasks/work-service.js";
+import { MAX_HOST_PROCESSES, MAX_PROCESS_TIMEOUT_SECONDS } from "./process-runtime.js";
+import { CONNECTION_RECOVERY_INSTRUCTIONS } from "../server-instructions.js";
 
 function jsonContent(value: unknown) {
   return { content: [{ type: "text" as const, text: JSON.stringify(value) }] };
@@ -42,6 +45,7 @@ export function registerHostTools(
     reloadWorkspaces?: () => Promise<unknown>;
     queryThreads?: ThreadListQuery;
     withCommand?: <T>(operation: () => Promise<T>) => Promise<T>;
+    processTasks?: Pick<WorkService, "startHostProcess">;
   } = {}
 ) {
   const identity = options.identity ?? { hostname: hostname() };
@@ -85,6 +89,9 @@ export function registerHostTools(
       resource_max_bytes: EXPORT_RESOURCE_BYTES, max_active: EXPORT_MAX_ACTIVE,
       total_buffer_bytes: EXPORT_BUFFER_BYTES, lifetime: "until expiry, release or process exit" },
     command_max_seconds: 45, gui_control: desktopCapabilities(policy).enabled,
+    host_processes: { available: !!options.processTasks && policy.config.enabled && policy.config.commands_enabled,
+      max_active_per_bridge: MAX_HOST_PROCESSES, output_limit_bytes: 65_536,
+      default_timeout_seconds: null, max_timeout_seconds: MAX_PROCESS_TIMEOUT_SECONDS },
     desktop: desktopCapabilities(policy),
     work_execution: { default: "danger-full-access", options: ["read-only", "danger-full-access"], write_scope: "full access uses OS account privileges; read-only prevents model file writes" },
     policy_changes: "local administrator plus runtime restart",
@@ -232,7 +239,7 @@ export function registerHostTools(
   }, ({ path, expected_sha256 }) => safe("delete", { path }, () => files.remove(path, expected_sha256)));
 
   server.registerTool("run_host_command", {
-    description: "Run a host command. Requires administrator opt-in. Uses an absolute executable and argv without implicit shell, hidden windows, a 1-45 second deadline and bounded output. This is NOT an OS sandbox: commands have the current account's filesystem and network rights. Do not use it for desktop interaction without user permission. Cancellation kills this command, unlike wait_task cancellation.",
+    description: "Run a short synchronous host command without an agent; use start_host_process for long native commands. Requires administrator opt-in. Uses an absolute executable and argv without implicit shell, hidden windows, a 1-45 second deadline and bounded output. This is NOT an OS sandbox: commands have the current account's filesystem and network rights. Do not use it for desktop interaction without user permission. Cancellation kills this command, unlike wait_task cancellation.",
     inputSchema: { executable: pathSchema, args: z.array(z.string().max(32_767)).max(256).default([]),
       cwd: pathSchema, timeout_seconds: z.number().min(1).max(45).default(25) },
     annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true }
@@ -241,6 +248,15 @@ export function registerHostTools(
       const command = () => runHostCommand(policy, executable, args, cwd, timeout_seconds, signal);
       return options.withCommand ? options.withCommand(command) : command();
     }));
+
+  if (options.processTasks) server.registerTool("start_host_process", {
+    description: `Start an asynchronous native OS process without Codex/DSH or a model. Requires the same administrator host-command opt-in and command_roots cwd policy as run_host_command; executable must be absolute, args are passed without an implicit shell, and cwd is explicit. Returns task_id immediately after launch is scheduled. Inspect progress with task_result, wait with wait_task, stop with control_task interrupt. Optional timeout_seconds limits execution; omitted means no deadline. Captures 65536 bytes total; current account privileges, no elevation or OS sandbox. A cancelled start response after scheduling does not stop execution; never replay an uncertain start. Bridge shutdown requests tree termination; no automatic restart or resume. ${CONNECTION_RECOVERY_INSTRUCTIONS}`,
+    inputSchema: { executable: pathSchema, args: z.array(z.string().max(32_767)).max(256).default([]),
+      cwd: pathSchema, timeout_seconds: z.number().min(1).max(MAX_PROCESS_TIMEOUT_SECONDS).optional() },
+    annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true }
+  }, ({ executable, args, cwd, timeout_seconds }, { signal }) => safe("start_host_process", { executable, cwd },
+    () => options.processTasks!.startHostProcess({ executable, args, cwd,
+      ...(timeout_seconds === undefined ? {} : { timeout_seconds }) }, options.withCommand, signal)));
 
 
 

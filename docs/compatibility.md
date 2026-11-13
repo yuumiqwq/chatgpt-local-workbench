@@ -20,6 +20,8 @@ Old work records using `workspace-write` normalize to the established `danger-fu
 
 The history catalog retains `can_resume_with_write` for response compatibility. It reflects the host file policy's write check for the project, not the executor's authority: full-access execution is selected separately through `access`. Do not use this field as permission to change files or as proof that execution will be denied.
 
+Run records now distinguish agent and process variants. Missing `kind` is accepted as a legacy agent record. Existing tool names and agent behavior remain supported; process-only fields never stand in for executor access or native history. Upgrade all Bridge writers sharing a registry before starting process tasks: old binaries cannot read process records, so a rollback requires a separately preserved compatible registry.
+
 Registry records/results are private runtime data. Retired proposal or supervisor sidecars are not loaded as current work and are not automatically removed; their contents may remain useful to their owner.
 
 ## Earlier client interfaces
