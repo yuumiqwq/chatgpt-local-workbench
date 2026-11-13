@@ -1,8 +1,10 @@
 import { execFile } from "node:child_process";
 import { lstat } from "node:fs/promises";
+import { extname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { HostError, HostPolicy } from "./host-policy.js";
+import { extractPdfTextPage } from "./pdf-text.js";
 
 const execFileAsync = promisify(execFile);
 const DOCUMENT_BYTES_LIMIT = 128 * 1024 * 1024;
@@ -43,6 +45,9 @@ export async function readHostDocument(
     throw new HostError("HOST_FILE_TOO_LARGE", "The document exceeds the 128 MiB extraction limit.");
   }
   signal?.throwIfAborted();
+  if (extname(path).toLowerCase() === ".pdf") {
+    return extractPdfTextPage(path, offset, maxChars, signal);
+  }
 
   const interpreter = process.platform === "win32" ? "py" : "python3";
   const arguments_ = [

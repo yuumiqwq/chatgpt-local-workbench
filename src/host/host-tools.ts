@@ -192,7 +192,7 @@ export function registerHostTools(
     })));
 
   server.registerTool("read_host_document", {
-    description: "Extract readable text from a local document as paginated Unicode character chunks without using Codex. Supports DOC, DOCX, PPTX, XLSX, XLSM, and ordinary text/CSV/HTML; PDF needs an installed PyMuPDF or pypdf, scanned PDFs need OCR. Images, embedded charts and precise layout are not reconstructed. Requires Python 3.10+ on the Workbench host. This is a read-only operation; no converted file is written.",
+    description: "Extract readable text from a local document as paginated Unicode character chunks without using Codex. Supports DOC, DOCX, PPTX, XLSX, XLSM, and ordinary text/CSV/HTML; PDF text uses the bundled PDF.js dependency, scanned PDFs need OCR. Images, embedded charts and precise layout are not reconstructed. Non-PDF formats need Python 3.10+, while PDF is parsed with packaged PDF.js. This is a read-only operation; no converted file is written.",
     inputSchema: { path: pathSchema,
       offset: z.number().int().min(0).default(0),
       max_chars: z.number().int().min(1).max(40_000).default(12_000) },

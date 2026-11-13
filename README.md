@@ -37,7 +37,7 @@ flowchart LR
 
 ## 安装与连接
 
-需要 Node.js 22 或更高版本、Git，以及要使用的执行器 CLI。执行器应在运行 Bridge 的账户下完成本机配置和认证；部署适配器、隧道及认证服务不包含在本仓库内。
+需要 Node.js 22.13 或更高版本、Git，以及要使用的执行器 CLI。执行器应在运行 Bridge 的账户下完成本机配置和认证；部署适配器、隧道及认证服务不包含在本仓库内。
 
 ```sh
 git clone https://github.com/yuumiqwq/chatgpt-local-workbench.git

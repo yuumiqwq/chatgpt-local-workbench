@@ -31,7 +31,7 @@
     "engineering-bridge": "dist/src/mcp-stdio.js"
   },
   "engines": {
-    "node": ">=22"
+    "node": ">=22.13.0"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
@@ -55,6 +55,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.32.1",
+    "pdfjs-dist": "6.5.438",
     "sharp": "0.35.5",
     "zod": "^3.25.76"
   }

@@ -21,7 +21,7 @@ chatgpt-local-workbench exposes durable Codex work, temporary agent execution an
 | list_codex_projects | Optional query/codex_home/cursor/scan_limit/archived; project groups from a bounded history page. |
 | list_codex_threads | Optional query/cwd/codex_home/cursor/limit/archived; native IDs and titles. |
 | read_host_file | path; optional offset, max_bytes and utf8/base64 encoding. include_sha256 defaults to false; request it once before a replacement, move or deletion. |
-| read_host_document | path, optional character offset/max_chars; extract text from DOC/DOCX/PPTX/XLSX, common text files, and supported PDFs without launching an agent; requires Python 3.10+ on this host. |
+| read_host_document | path, optional character offset/max_chars; extract text from DOC/DOCX/PPTX/XLSX, common text files, and text PDFs using bundled PDF.js without launching an agent; Python 3.10+ is needed for non-PDF document formats. |
 | export_host_file | path inside export_roots; returns immutable transfer metadata and an MCP resource_link for native attachment delivery. No file bytes in the initial response. |
 | read_export_chunk | export_id, offset, max_bytes up to 524,288; Base64 bytes, chunk_sha256, full sha256, size, next_offset and eof. Optional content_text=false avoids duplicating bytes outside structuredContent. |
 | release_host_export | export_id; release a buffered export without modifying its source. |

@@ -64,3 +64,64 @@ test("Workbench parser supports common Office documents without enabling host co
   assert.equal(page.format, "csv");
   assert.match(page.content, /小明 \| 100/u);
 });
+
+function minimalPdf(label: string): Buffer {
+  const payload = `BT\n/F1 16 Tf\n60 200 Td\n(${label}) Tj\nET`;
+  const objects = [
+    "<< /Type /Catalog /Pages 2 0 R >>",
+    "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>",
+    `<< /Length ${Buffer.byteLength(payload)} >>\nstream\n${payload}\nendstream`,
+    "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"
+  ];
+  let output = "%PDF-1.4\n";
+  const offsets = [0];
+  for (const [i, body] of objects.entries()) {
+    offsets.push(Buffer.byteLength(output));
+    output += `${i + 1} 0 obj\n${body}\nendobj\n`;
+  }
+  const xref = Buffer.byteLength(output);
+  output += `xref\n0 ${offsets.length}\n0000000000 65535 f \n`;
+  for (const pos of offsets.slice(1)) {
+    output += String(pos).padStart(10, "0") + " 00000 n \n";
+  }
+  output += `trailer\n<< /Root 1 0 R /Size ${offsets.length} >>\nstartxref\n${xref}\n%%EOF\n`;
+  return Buffer.from(output, "ascii");
+}
+
+test("PDF text is extracted directly without Python and preserves page pagination", async t => {
+  const dir = await mkdtemp(join(tmpdir(), "workbench-pdf-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const policyFile = join(dir, "policy.json");
+  await writeFile(policyFile, JSON.stringify({
+    version: 1, enabled: true, read_roots: [dir], write_roots: [],
+    command_roots: [], commands_enabled: false, codex_homes: []
+  }));
+  const path = join(dir, "test.pdf");
+  await writeFile(path, minimalPdf("Workbench PDF text"));
+  const policy = await HostPolicy.load(policyFile);
+  const first = await readHostDocument(policy, path, 0, 17);
+  assert.equal(first.format, "pdf");
+  assert.equal(first.offset, 0);
+  assert.equal(first.content.length, 17);
+  assert.equal(first.next_offset, 17);
+  const second = await readHostDocument(policy, path, first.next_offset!, 40000);
+  assert.match(first.content + second.content, /Workbench PDF text/u);
+  assert.match(first.content + second.content, /PDF 第 1 页/u);
+  assert.equal(second.next_offset, null);
+  assert.deepEqual((await readdir(dir)).sort(), ["policy.json", "test.pdf"]);
+});
+
+test("PDF parser signals image-only pages without making up text", async t => {
+  const dir = await mkdtemp(join(tmpdir(), "workbench-pdf-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  await writeFile(join(dir, "policy.json"), JSON.stringify({
+    version: 1, enabled: true, read_roots: [dir], write_roots: [],
+    command_roots: [], commands_enabled: false, codex_homes: []
+  }));
+  const path = join(dir, "blank.pdf");
+  await writeFile(path, minimalPdf(""));
+  const page = await readHostDocument(await HostPolicy.load(join(dir, "policy.json")), path);
+  assert.equal(page.format, "pdf");
+  assert.ok(page.warnings.some(message => message.includes("OCR")));
+});

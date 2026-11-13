@@ -24,7 +24,7 @@ Workspace records identify projects. `project_root` bounds project registration,
 
 ## Install and connect
 
-Install Node.js 22 or newer, Git and the executor CLI you intend to use. Configure and authenticate the executor under the account running Bridge. Transport adapters, tunnels and remote authentication services are separate deployments.
+Install Node.js 22.13 or newer, Git and the executor CLI you intend to use. Configure and authenticate the executor under the account running Bridge. Transport adapters, tunnels and remote authentication services are separate deployments.
 
 ```sh
 git clone https://github.com/yuumiqwq/chatgpt-local-workbench.git
