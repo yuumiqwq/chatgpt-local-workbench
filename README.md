@@ -93,7 +93,7 @@ Codex 的 `read-only` 使用原生只读策略并关闭网络，DSH 的同名选
 
 ## 接口与维护
 
-基础 MCP 入口在 host policy 开启时提供 26 个工具，另外配置 `export_roots` 后提供 29 个工具，关闭 host policy 时提供 14 个工具；可选桌面和手机模块按本机策略增加工具。完整参数见[工具清单](docs/tools.md)，各模块关系见[架构](docs/architecture.md)，配置及环境变量见[部署配置](docs/host-operations.md)。
+基础 MCP 入口在 host policy 开启时提供 26 个工具，另外配置 `export_roots` 后提供 29 个工具，关闭 host policy 时提供 15 个工具；可选桌面和手机模块按本机策略增加工具。完整参数见[工具清单](docs/tools.md)，各模块关系见[架构](docs/architecture.md)，配置及环境变量见[部署配置](docs/host-operations.md)。
 
 修改后执行以下验证。`npm test` 自带一次构建，额外的 `build` 可独立确认最终输出；测试使用临时目录和模拟执行器，不需要运行付费模型。
 
@@ -108,3 +108,5 @@ npm audit
 源码推送不会自动部署本机服务。更新运行版本应在现有任务结束后构建并安排服务重启，工具元数据有变化时还需刷新 ChatGPT 连接；配置和状态应保留在仓库外，并在更新中原样保留。开发与并发限制见[维护说明](CONTRIBUTING.md)及[兼容性说明](docs/compatibility.md)。
 
 仓库名称为 `chatgpt-local-workbench`，npm 包名、可执行命令、MCP 服务标识和 `ENGINEERING_BRIDGE_*` 环境变量仍保留原名，以便现有安装继续工作。项目基于 [wudy29/engineering-bridge](https://github.com/wudy29/engineering-bridge) 发展，保留原作者版权声明并采用 [MIT 许可证](LICENSE)。
+
+完整接口清单、命名取舍及模块边界见[公共接口架构审计](docs/api-architecture-audit.zh-CN.md)。启动回执丢失时可先用 `list_tasks` 查找保留的任务标识，再检查状态，避免重复启动。

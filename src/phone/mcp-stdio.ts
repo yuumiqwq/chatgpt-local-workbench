@@ -5,7 +5,7 @@ import { VERSION } from '../version.js';
 import { loadPhoneConfig } from './config.js';
 import { RealAdb } from './adb.js';
 import { PhoneService } from './service.js';
-import { PHONE_EFFICIENCY_INSTRUCTIONS, registerPhoneTools } from './tools.js';
+import { PHONE_INSTRUCTIONS, PHONE_EFFICIENCY_INSTRUCTIONS, registerPhoneTools } from './tools.js';
 
 async function main() {
   const path = process.argv[2];
@@ -13,7 +13,7 @@ async function main() {
   const config = await loadPhoneConfig(path);
   if (!config) throw new Error('PHONE_NOT_CONFIGURED');
   const server = new McpServer({ name: 'legion-phone-local', version: VERSION }, {
-    instructions: `Local phone tools use the existing ADB connection and shared control lease. Acquire control for writes and release it when finished. ${PHONE_EFFICIENCY_INSTRUCTIONS}`
+    instructions: `${PHONE_INSTRUCTIONS} ${PHONE_EFFICIENCY_INSTRUCTIONS}`
   });
   registerPhoneTools(server, new PhoneService(config, new RealAdb(config)));
   await server.connect(new StdioServerTransport());

@@ -79,7 +79,7 @@ This is a direct-execution service for trusted personal use. Access to its tools
 
 ## Interfaces and maintenance
 
-The base MCP entry point exposes 26 tools when host operations are enabled, 29 with separately authorized `export_roots`, and 14 when host operations are disabled. Optional desktop and phone modules add tools according to local policy. `export_host_file` returns metadata and an MCP resource link for verified binary transfer and delivery through the client's native chat attachments. See [file delivery and client limitations](docs/file-exports.md), the [tool reference](docs/tools.md), [architecture](docs/architecture.md) and [deployment settings](docs/host-operations.md).
+The base MCP entry point exposes 26 tools when host operations are enabled, 29 with separately authorized `export_roots`, and 15 when host operations are disabled. Optional desktop and phone modules add tools according to local policy. `export_host_file` returns metadata and an MCP resource link for verified binary transfer and delivery through the client's native chat attachments. See [file delivery and client limitations](docs/file-exports.md), the [tool reference](docs/tools.md), [architecture](docs/architecture.md) and [deployment settings](docs/host-operations.md).
 
 Run these checks after changes. Tests build the project and use temporary fixtures or simulated executors without paid model calls; the separate build verifies the final output independently.
 
@@ -94,3 +94,5 @@ npm audit
 Pushing source does not deploy a local service. Build an update and arrange its restart after active work has finished; refresh ChatGPT metadata when the tool surface changes. Keep private configuration and state outside the checkout and preserve them during upgrades. See [contributing](CONTRIBUTING.md) and [compatibility](docs/compatibility.md) for development and concurrency limitations.
 
 The repository is named `chatgpt-local-workbench`. The npm package, executable, MCP identity and `ENGINEERING_BRIDGE_*` environment variables retain their existing names for installation compatibility. The project derives from [wudy29/engineering-bridge](https://github.com/wudy29/engineering-bridge) and retains its copyright notice under the [MIT license](LICENSE).
+
+See [API conventions](docs/api-conventions.md) for the vocabulary and discovery guide. Recover missing start receipts with `list_tasks` before inspecting candidates; do not replay uncertain starts.

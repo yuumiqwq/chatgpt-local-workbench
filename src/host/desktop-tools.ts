@@ -21,9 +21,20 @@ const descriptions: Record<DesktopTool, string> = {
   desktop_input: "Explicitly authorized physical input only: targeted key combo, coordinate mouse operations or ref-to-ref drag. Requires allow_mutations, allow_headed, allow_physical_input and headed=true. Pointer coordinates do not identify their recipient; observe beforehand. No held keys/buttons, force shortcuts or automatic retries. Verify afterward; unsafe/unknown delivery must not be replayed."
 };
 
+export function desktopToolNames(policy: HostPolicy): DesktopTool[] {
+  if (!desktopEnabled(policy.config.enabled, policy.config.desktop)) return [];
+  const config = policy.config.desktop;
+  return (Object.keys(desktopSchemas) as DesktopTool[]).filter(name =>
+    !(name === "desktop_input" && !config.allow_physical_input ||
+      name === "desktop_screenshot" && !config.allow_screenshot ||
+      name === "desktop_clipboard" && config.clipboard === "disabled" ||
+      ["desktop_act", "desktop_window", "desktop_input"].includes(name) && !config.allow_mutations));
+}
+
 export function desktopCapabilities(policy: HostPolicy) {
   const config = policy.config.desktop;
   return { enabled: desktopEnabled(policy.config.enabled, config), configured: config.enabled,
+    tool_names: desktopToolNames(policy),
     mode: "headless by default", mutations: config.allow_mutations,
     headed: config.allow_headed, physical_input: config.allow_physical_input,
     screenshots: config.allow_screenshot, clipboard: config.clipboard,
@@ -34,14 +45,9 @@ export function desktopCapabilities(policy: HostPolicy) {
 
 export function registerDesktopTools(server: McpServer, policy: HostPolicy,
   audit: (entry: Record<string, unknown>) => Promise<void>, cli = new DesktopCli(policy)) {
-  if (!desktopEnabled(policy.config.enabled, policy.config.desktop)) return;
-  for (const name of Object.keys(desktopSchemas) as DesktopTool[]) {
-    if (name === "desktop_input" && !policy.config.desktop.allow_physical_input ||
-        name === "desktop_screenshot" && !policy.config.desktop.allow_screenshot ||
-        name === "desktop_clipboard" && policy.config.desktop.clipboard === "disabled" ||
-        ["desktop_act", "desktop_window", "desktop_input"].includes(name) && !policy.config.desktop.allow_mutations) continue;
+  for (const name of desktopToolNames(policy)) {
     const readOnly = !["desktop_act", "desktop_window", "desktop_input"].includes(name) &&
-      (name !== "desktop_clipboard" || policy.config.desktop.clipboard === "read");
+      (name !== "desktop_clipboard" || policy.config.desktop.clipboard === "read" || !policy.config.desktop.allow_mutations);
     server.registerTool(name, {
       description: descriptions[name], inputSchema: { request: z.preprocess((input, context) => {
         if (!desktopRequestWithinLimit(input)) {

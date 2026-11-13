@@ -45,3 +45,5 @@ The existing `enabled`, `commands_enabled`, executable checks and `command_roots
 ## Upgrade
 
 Build and validate the source, wait for active agent and process work to finish, then arrange a runtime restart while preserving private configuration, registry and results. Refresh MCP metadata to discover `start_host_process`. Upgrade all Bridge writers sharing a registry before creating native process records: older binaries cannot read the new process variant. Existing agent records are accepted without rewriting their identity or history; do not roll back an old binary against a registry containing process records. A Git push alone does not update the running service.
+
+Use `list_tasks` to recover retained process IDs if a start receipt was lost. Omit the state filter to include already-finished tasks. The listing excludes argv and output; `control_available` refers only to this Bridge instance. Inspect candidates before deciding whether another execution is needed.

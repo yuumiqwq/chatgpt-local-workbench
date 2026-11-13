@@ -62,7 +62,8 @@ test("server instructions preserve existing guidance and append only the validat
   const absent = await loadHostIdentity(f.identityPath);
   assert.equal(buildServerInstructions(absent), SERVER_INSTRUCTIONS);
   assert.equal(buildServerInstructions(absent, PHONE_INSTRUCTIONS), `${SERVER_INSTRUCTIONS}\n\n${PHONE_INSTRUCTIONS}`);
-  assert.ok(SERVER_INSTRUCTIONS.startsWith(LONG_TASK_INSTRUCTIONS));
+  assert.ok(SERVER_INSTRUCTIONS.includes(LONG_TASK_INSTRUCTIONS));
+  assert.match(SERVER_INSTRUCTIONS, /^Vocabulary: workspace_id/);
   assert.match(SERVER_INSTRUCTIONS, /OpenCLI/);
   assert.match(SERVER_INSTRUCTIONS, /MinerU/);
   assert.doesNotMatch(SERVER_INSTRUCTIONS, /ROG|Masked|Legion|LAPTOP-1189PH9Q|FLAWLESS|LAPTOP-NHHRR3GO/);

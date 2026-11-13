@@ -20,7 +20,7 @@ import { PHONE_INSTRUCTIONS, PHONE_EFFICIENCY_INSTRUCTIONS, registerPhoneTools }
 import { buildServerInstructions } from "./server-instructions.js";
 import { loadHostIdentity } from "./host-identity.js";
 import { CoreError, serializeError } from "./core/errors.js";
-import { registerTaskControlTool, registerTaskResultTools } from "./task-result-tools.js";
+import { registerTaskControlTool, registerTaskDiscoveryTool, registerTaskResultTools } from "./task-result-tools.js";
 import { HostError, HostPolicy } from "./host/host-policy.js";
 import { registerHostTools } from "./host/host-tools.js";
 import { DESKTOP_INSTRUCTIONS } from "./host/desktop-tools.js";
@@ -179,6 +179,7 @@ async function main(): Promise<void> {
   }, async ({ query }) => jsonContent({ workspaces: registry.list(query) }));
 
   registerTaskResultTools(server, works);
+  registerTaskDiscoveryTool(server, works);
 
   registerTaskControlTool(server, works);
 
@@ -186,7 +187,8 @@ async function main(): Promise<void> {
     description: "Register an existing local project directory as a workspace. The path must already exist inside a configured project_root.",
     inputSchema: {
       project_path: z.string().min(1)
-    }
+    },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false }
   }, async ({ project_path }) => {
     try {
       return jsonContent(await onboarding.bind({ project_path }));
@@ -200,7 +202,8 @@ async function main(): Promise<void> {
     inputSchema: {
       parent: z.string().min(1),
       name: z.string().min(1)
-    }
+    },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false }
   }, async ({ parent, name }) => {
     try {
       return jsonContent(await onboarding.create({ parent, name }));

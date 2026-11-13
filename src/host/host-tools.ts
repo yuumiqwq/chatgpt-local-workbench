@@ -3,6 +3,7 @@ import { hostname } from "node:os";
 import { ResourceTemplate, type McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { ErrorCode, McpError, type CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
+import { VERSION } from "../version.js";
 import { CoreError, serializeError } from "../core/errors.js";
 import type { HostIdentity } from "../host-identity.js";
 
@@ -15,7 +16,7 @@ import { HostError, HostPolicy } from "./host-policy.js";
 import { desktopCapabilities, registerDesktopTools } from "./desktop-tools.js";
 import type { WorkService } from "../tasks/work-service.js";
 import { MAX_HOST_PROCESSES, MAX_PROCESS_TIMEOUT_SECONDS } from "./process-runtime.js";
-import { CONNECTION_RECOVERY_INSTRUCTIONS } from "../server-instructions.js";
+import { RECOVERY_REMINDER } from "../server-instructions.js";
 
 function jsonContent(value: unknown) {
   return { content: [{ type: "text" as const, text: JSON.stringify(value) }] };
@@ -59,7 +60,7 @@ export function registerHostTools(
       try { await audit.record({ operation, ...paths, state: "completed" }); }
       catch {
         const audit_warning = "The operation completed but the final audit record could not be written.";
-        return format ? { ...format(result), _meta: { audit_warning } } : jsonContent({ result, audit_warning });
+        return { ...(format ? format(result) : jsonContent(result)), _meta: { audit_warning } };
       }
       return format ? format(result) : jsonContent(result);
     } catch (error) {
@@ -77,9 +78,10 @@ export function registerHostTools(
   const pathSchema = z.string().min(1).max(4096);
 
   server.registerTool("host_capabilities", {
-    description: "Read the administrator-configured host capabilities. File roots constrain file tools. Enabled host commands run with the current OS account's privileges; command_roots constrain only the starting directory, not process access. Desktop tools are a separate hostname-bound opt-in; inspect desktop permissions before use.",
+    description: "Read the administrator-configured host capabilities. File roots constrain file tools. Enabled host commands run with the current OS account's privileges; command_roots constrain only the starting directory, not process access. Desktop tools are a separate hostname-bound opt-in; inspect desktop permissions before use. gui_control means module enabled, not all actions allowed or CLI readiness verified. tools/list is the exposed catalog; command tools remain listed when commands_enabled=false.",
     inputSchema: {}, annotations: readOnly
   }, () => jsonContent({
+    server_version: VERSION,
     hostname: identity.hostname,
     ...(identity.display_name === undefined ? {} : { display_name: identity.display_name }),
     ...policy.config, policy_file: policy.policyPath,
@@ -252,7 +254,7 @@ export function registerHostTools(
     }));
 
   if (options.processTasks) server.registerTool("start_host_process", {
-    description: `Start an asynchronous native OS process without Codex/DSH or a model. Requires the same administrator host-command opt-in and command_roots cwd policy as run_host_command; executable must be absolute, args are passed without an implicit shell, and cwd is explicit. Returns task_id immediately after launch is scheduled. Inspect progress with task_result, wait with wait_task, stop with control_task interrupt. Optional timeout_seconds limits execution; omitted means no deadline. Captures 65536 bytes total; current account privileges, no elevation or OS sandbox. A cancelled start response after scheduling does not stop execution; never replay an uncertain start. Bridge shutdown requests tree termination; no automatic restart or resume. ${CONNECTION_RECOVERY_INSTRUCTIONS}`,
+    description: `Start an asynchronous native OS process without Codex/DSH or a model. Requires the same administrator host-command opt-in and command_roots cwd policy as run_host_command; executable must be absolute, args are passed without an implicit shell, and cwd is explicit. Returns task_id immediately after launch is scheduled. Inspect progress with task_result, wait with wait_task, stop with control_task interrupt. Optional timeout_seconds limits execution; omitted means no deadline. Captures 65536 bytes total; current account privileges, no elevation or OS sandbox. A cancelled start response after scheduling does not stop execution; never replay an uncertain start. Bridge shutdown requests tree termination; no automatic restart or resume. ${RECOVERY_REMINDER}`,
     inputSchema: { executable: pathSchema, args: z.array(z.string().max(32_767)).max(256).default([]),
       cwd: pathSchema, timeout_seconds: z.number().min(1).max(MAX_PROCESS_TIMEOUT_SECONDS).optional() },
     annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true }

@@ -29,3 +29,5 @@ Registry state and native history have different lifetimes. Completing a run doe
 | `src/core/`, `src/version.ts` | IDs, safe error serialization and package-derived version. |
 
 There is no plugin loader for arbitrary executor types; adding one requires an adapter implementing `Executor`, factory routing and public schema changes with tests. Native host commands share validation; asynchronous commands reuse the task lifecycle while synchronous commands keep their bounded request/response contract. Persistence and concurrency limits are listed in [compatibility](compatibility.md).
+
+The complete [public-interface audit](api-architecture-audit.zh-CN.md) maps every registration and module boundary. `list_tasks` projects retained run metadata for receipt recovery; it reuses WorkService and does not create a second task store. `desktopToolNames` is shared by discovery and capability reporting.

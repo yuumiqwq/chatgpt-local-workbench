@@ -198,6 +198,29 @@ export class WorkService {
     return { works: matched.slice(offset, offset + limit).map(work => this.view(work)), total: matched.length,
       next_offset: offset + limit < matched.length ? offset + limit : null, retention: this.retention };
   }
+  listTasks(options: { kind?: "agent" | "process" | undefined; state?: TaskView["state"] | undefined;
+    created_after?: string | undefined; offset?: number | undefined; limit?: number | undefined } = {}) {
+    this.refresh();
+    const matched = [...this.runs.values()].filter(run =>
+      (options.kind === undefined || run.kind === options.kind) &&
+      (options.state === undefined || run.state === options.state) &&
+      (options.created_after === undefined || Date.parse(run.created_at) >= Date.parse(options.created_after)))
+      .sort((a, b) => b.created_at.localeCompare(a.created_at) || a.task_id.localeCompare(b.task_id));
+    const offset = options.offset ?? 0, limit = options.limit ?? 20;
+    // Project metadata explicitly: argv, instructions and results never enter discovery.
+    // Live handles identify control ownership; persisted PIDs are not authority.
+    return { tasks: matched.slice(offset, offset + limit).map(run => ({
+      task_id: run.task_id, kind: run.kind, state: run.state,
+      created_at: run.created_at, updated_at: run.updated_at,
+      control_available: (run.state === "queued" || run.state === "running") &&
+        (this.processes.has(run.task_id) || this.live.has(run.task_id)),
+      ...(run.kind === "process" ? { executable: run.executable, cwd: run.cwd } : {
+        executor: run.executor, ephemeral: run.ephemeral,
+        ...(run.work_id ? { work_id: run.work_id } : {}),
+        ...(run.thread_id ? { thread_id: run.thread_id } : {})
+      })
+    })), total: matched.length, next_offset: offset + limit < matched.length ? offset + limit : null };
+  }
   private view(work: Work) {
     return { ...work, running: this.busy(work.work_id),
       last_run: work.last_task_id ? this.agentRun(work.last_task_id) : null,

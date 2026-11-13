@@ -6,7 +6,7 @@ import test from "node:test";
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { LONG_TASK_INSTRUCTIONS } from "../../src/server-instructions.js";
+import { LONG_TASK_INSTRUCTIONS, CONNECTION_RECOVERY_INSTRUCTIONS, RECOVERY_REMINDER } from "../../src/server-instructions.js";
 
 const VERSION_MODULE = new URL("../../src/version.js", import.meta.url);
 
@@ -71,7 +71,7 @@ test("MCP exposes unified work operations and rejects removed APIs", async t => 
     assert.match(instructions, /wait_task\/task_result/);
     assert.match(instructions, /never duplicate a running task/);
     assert.match(instructions, /checkpoints/);
-    assert.match(instructions, /run_temp, or run_host_command when enabled/);
+    assert.match(instructions, /run_host_command or start_host_process when enabled; use run_temp only when agent reasoning is needed/);
     assert.match(instructions, /OpenCLI for web\/social-media search and browser operations/);
     assert.match(instructions, /MinerU for local PDF\/scanned-document parsing and OCR/);
     assert.match(instructions, /local tools, not built-in MCP tools; verify availability and discover paths on the connected computer/);
@@ -81,8 +81,10 @@ test("MCP exposes unified work operations and rejects removed APIs", async t => 
     assert.match(instructions, /MinerU, first find its local installation and actual service\/CLI\/wrapper entry point before use/);
     assert.doesNotMatch(instructions, /[A-Z]:[\\/]|(?:mineru|magic-pdf)\s+--/i);
     const tools=(await client.listTools()).tools;
-    assert.ok(tools.find(tool => tool.name === "wait_task")?.description?.includes(LONG_TASK_INSTRUCTIONS));
-    assert.equal(tools.filter(tool => tool.description?.includes(LONG_TASK_INSTRUCTIONS)).length, 1);
+    assert.ok(instructions.includes(LONG_TASK_INSTRUCTIONS));
+    assert.ok(instructions.includes(CONNECTION_RECOVERY_INSTRUCTIONS));
+    assert.ok(tools.find(tool => tool.name === "wait_task")?.description?.includes(RECOVERY_REMINDER));
+    assert.equal(tools.filter(tool => tool.description?.includes(LONG_TASK_INSTRUCTIONS)).length, 0);
     const localToolEntry = tools.find(tool => tool.name === "run_temp")?.description ?? "";
     assert.match(localToolEntry, /locally available OpenCLI.*web\/social-media search or browser operations.*MinerU.*PDF parsing\/OCR/);
     assert.match(localToolEntry, /follow server instructions for discovery/);
@@ -93,16 +95,10 @@ test("MCP exposes unified work operations and rejects removed APIs", async t => 
     for (const name of ["wait_task", "continue_work", "run_temp"]) {
       const description = tools.find(tool => tool.name === name)?.description;
       assert.ok(description, name);
-      assert.match(description, /After 3 consecutive Bridge connection interruptions/u);
-      assert.match(description, /request timeouts without a valid response/u);
-      assert.match(description, /stop automatic retries and polling across all Bridge tools/u);
-      assert.match(description, /ready=false is normal waiting and resets this failure count/u);
-      assert.match(description, /verified completed work, unfinished items/u);
-      assert.match(description, /work_id\/task_id\/thread_id/u);
-      assert.match(description, /reply '继续'/u);
-      assert.match(description, /one read-only check of the original task/u);
-      assert.match(description, /same work_id and original thread_id/u);
-      assert.match(description, /does not cancel a running task/u);
+      assert.ok(description.includes(RECOVERY_REMINDER));
+      assert.match(description, /list_tasks/);
+      assert.match(description, /do not replay/);
+      assert.match(description, /Cancelling a wait does not stop execution/);
     }
     for (const name of ["open_work","list_work","continue_work","run_temp","finish_work","manage_work","work_retention"]) {
       assert.ok(tools.some(tool=>tool.name===name));
