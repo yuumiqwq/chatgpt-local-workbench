@@ -4,6 +4,7 @@ import { extname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { HostError, HostPolicy } from "./host-policy.js";
+import { fileDigest, HostFiles } from "./host-files.js";
 import { extractPdfTextPage } from "./pdf-text.js";
 
 const execFileAsync = promisify(execFile);
@@ -93,4 +94,51 @@ export async function readHostDocument(
     throw new HostError("HOST_DOCUMENT_PARSE_FAILED", "Invalid document page metadata.");
   }
   return page as DocumentPage;
+}
+
+const AUTO_DOCUMENT_EXTENSIONS = new Set([
+  ".doc", ".docx", ".pdf", ".ppt", ".pptx", ".xls", ".xlsx", ".xlsm", ".html", ".htm"
+]);
+
+export type ReadHostFileMode = "auto" | "raw";
+
+/**
+ * One public read path: normal UTF-8 files keep byte-based streaming while
+ * documents are extracted into paginated character-based text. Explicit raw
+ * mode or base64 retains the original byte-level behavior.
+ */
+export async function readHostFileSmart(
+  files: HostFiles,
+  policy: HostPolicy,
+  options: {
+    path: string;
+    offset?: number;
+    max_bytes?: number;
+    max_chars?: number;
+    encoding?: "utf8" | "base64";
+    include_sha256?: boolean;
+    mode?: ReadHostFileMode;
+  },
+  signal?: AbortSignal
+) {
+  const { path, offset = 0, max_bytes = 65_536, max_chars = 12_000,
+    encoding = "utf8", include_sha256 = false, mode = "auto" } = options;
+  if (mode === "raw" || encoding === "base64" ||
+      !AUTO_DOCUMENT_EXTENSIONS.has(extname(path).toLowerCase())) {
+    return files.read(path, offset, max_bytes, encoding, include_sha256);
+  }
+  // Parsed pages use Unicode character offsets. Raw UTF-8 pages use byte
+  // offsets; these are explicitly differentiated by the response metadata.
+  const page = await readHostDocument(policy, path, offset, max_chars, signal);
+  const size = (await lstat(page.path)).size;
+  const sha256 = include_sha256 ? await fileDigest(page.path) : undefined;
+  return {
+    ...page, size,
+    encoding: "utf8" as const,
+    offset_unit: "characters" as const,
+    ...(sha256 === undefined ? {} : { sha256 }),
+    truncated: page.next_offset !== null,
+    next_offset: page.next_offset ?? page.total_chars,
+    characters_read: Array.from(page.content).length
+  };
 }

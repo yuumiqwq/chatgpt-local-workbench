@@ -9,7 +9,7 @@ import type { HostIdentity } from "../host-identity.js";
 import { listCodexProjects, listCodexThreads, type ThreadListQuery } from "./codex-thread-list.js";
 import { runHostCommand } from "./host-command.js";
 import { HostFiles } from "./host-files.js";
-import { readHostDocument } from "./host-documents.js";
+import { readHostFileSmart } from "./host-documents.js";
 import { EXPORT_BUFFER_BYTES, EXPORT_CHUNK_BYTES, EXPORT_MAX_ACTIVE, EXPORT_RESOURCE_BYTES, HostExports } from "./host-exports.js";
 import { HostError, HostPolicy } from "./host-policy.js";
 import { desktopCapabilities, registerDesktopTools } from "./desktop-tools.js";
@@ -179,28 +179,30 @@ export function registerHostTools(
     }, signal, options.queryThreads)));
 
   server.registerTool("read_host_file", {
-    description: "Read a bounded file chunk with size and next_offset. UTF-8 pages end at complete characters; follow next_offset for the next page. Use base64 for binary files. Reading does not hash the file by default; set include_sha256=true once when preparing a replacement, move or deletion. Credential files, links and files above 512 MiB are rejected.",
-    inputSchema: { path: pathSchema, offset: z.number().int().min(0).optional(),
+    description: "Read a local file through one interface. Default mode=auto returns UTF-8 text files (.txt/.md and others) directly, and transparently extracts readable text from DOC/DOCX/PDF/PPTX/XLSX documents without an agent. For text the offset/next_offset units are UTF-8 bytes; for parsed documents they are Unicode characters and offset_unit=characters. Follow next_offset while truncated is true. For binary inspection or precise original bytes set mode=raw and encoding=base64 (encoding=base64 alone also selects raw). Include_sha256 scans the original file when needed for a replacement/move/deletion. Permission and file-size limits still apply; extraction cannot recover embedded images or scanned text.",
+    inputSchema: {
+      path: pathSchema,
+      offset: z.number().int().min(0).optional(),
       max_bytes: z.number().int().min(1).max(262_144).optional(),
+      max_chars: z.number().int().min(1).max(40_000).optional(),
+      mode: z.enum(["auto", "raw"]).default("auto"),
       encoding: z.enum(["utf8", "base64"]).optional(),
-      include_sha256: z.boolean().optional().default(false) }, annotations: readOnly
-  }, ({ path, offset, max_bytes, encoding, include_sha256 }) => safe("read", { path },
-    () => files.read(path, offset, max_bytes, encoding, include_sha256), value => ({
-      // Web clients can misread JSON text's content field as an MCP envelope.
-      // Explicit structured data preserves the page; retain text for existing clients.
-      ...jsonContent(value), structuredContent: value
-    })));
-
-  server.registerTool("read_host_document", {
-    description: "Extract readable text from a local document as paginated Unicode character chunks without using Codex. Supports DOC, DOCX, PPTX, XLSX, XLSM, and ordinary text/CSV/HTML; PDF text uses the bundled PDF.js dependency, scanned PDFs need OCR. Images, embedded charts and precise layout are not reconstructed. Non-PDF formats need Python 3.10+, while PDF is parsed with packaged PDF.js. This is a read-only operation; no converted file is written.",
-    inputSchema: { path: pathSchema,
-      offset: z.number().int().min(0).default(0),
-      max_chars: z.number().int().min(1).max(40_000).default(12_000) },
+      include_sha256: z.boolean().optional().default(false)
+    },
     annotations: readOnly
-  }, ({ path, offset, max_chars }, { signal }) => safe("read_document", { path }, () =>
-    readHostDocument(policy, path, offset, max_chars, signal), value => ({
-      ...jsonContent(value), structuredContent: { ...value }
-    })));
+  }, ({ path, offset, max_bytes, max_chars, mode, encoding, include_sha256 }, { signal }) =>
+    safe("read", { path },
+      () => readHostFileSmart(files, policy, {
+        path, mode, include_sha256,
+        ...(offset === undefined ? {} : { offset }),
+        ...(max_bytes === undefined ? {} : { max_bytes }),
+        ...(max_chars === undefined ? {} : { max_chars }),
+        ...(encoding === undefined ? {} : { encoding })
+      }, signal),
+      value => ({
+        // Keep both MCP representations for existing client compatibility.
+        ...jsonContent(value), structuredContent: value
+      })));
 
   server.registerTool("list_host_path", {
     description: "List one allowed local directory with offset pagination. Does not recurse or follow junctions.",

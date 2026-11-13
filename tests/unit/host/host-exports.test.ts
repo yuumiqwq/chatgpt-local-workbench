@@ -269,7 +269,7 @@ test("real STDIO MCP exports and reconstructs bytes, reads resources and preserv
   assert.equal(resource.mimeType, "application/pdf");
   assert.deepEqual(Buffer.from(resource.blob as string, "base64"), await readFile(small));
   assert.equal(digest(Buffer.from(resource.blob as string, "base64")), smallMeta.sha256);
-  const legacy = await call("read_host_file", { path: small });
+  const legacy = await call("read_host_file", { path: small, mode: "raw" });
   assert.match(JSON.stringify(legacy), /PDF-1.4/u);
   assert.equal((await client.callTool({ name: "export_host_file", arguments: { path: configPath } })).isError, true);
   await call("release_host_export", { export_id: meta.export_id });

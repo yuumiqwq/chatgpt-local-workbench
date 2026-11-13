@@ -60,7 +60,7 @@ Replace every directory with an existing local path. `codex_homes` identifies ac
 
 | Setting | Meaning |
 | --- | --- |
-| `enabled` | Enables the optional host/history tool group. Without it the MCP entry point exposes 14 tools instead of 26. |
+| `enabled` | Enables the optional host/history tool group. Without it the MCP entry point exposes 14 tools instead of 25. |
 | `read_roots` | Paths available to file reads, arbitrary `cwd` selection and native-history project validation. |
 | `export_roots` | Explicit file-delivery directories within read_roots. Empty by default; whole volumes and linked directories are rejected. Enables three export tools and the MCP file resource template. |
 | `export_max_bytes`, `export_ttl_seconds` | Per-export size limit defaults to and permits at most 512,000,000 bytes (decimal 512 MB); lifetime 30–3600 seconds, default 3600. Existing explicit values require an administrator update and later restart. See [file delivery](file-exports.md). |
@@ -71,7 +71,7 @@ Replace every directory with an existing local path. `codex_homes` identifies ac
 | `protected_paths` | Additional paths blocked from host file writes. |
 | `follow_links` | Defaults to false, rejecting links in ordinary host paths. Keep false unless the linked layout has been reviewed. |
 
-The read-only `read_host_document` tool extracts plain text through Workbench's bundled parser and returns `content`, `total_chars`, `next_offset`, and `warnings` directly to the caller. It enforces `read_roots` even when host commands are disabled and writes no converted files. For non-PDF documents, Windows uses the local Python launcher (`py -3`) and other platforms use `python3`, requiring Python 3.10+. Text, HTML, CSV, old Word DOC, DOCX, PPTX, and XLSX are supported by the standard library; PDF text is handled by the bundled PDF.js dependency without a local Python PDF library; scans and complex figure/slide layouts still need OCR or visual inspection. Older PPT and XLS files should be converted to modern formats first. The installed Python program is bundled in `dist/src/host/document_parser.py` during build and deployment.
+`read_host_file` is the single reader for raw files and documents. In its default `mode: "auto"`, UTF-8 text files are returned without conversion, while DOC/DOCX/PPTX/XLSX/PDF and HTML are parsed into readable Unicode text. The response marks document pagination as `offset_unit: "characters"`; ordinary text retains byte offsets. To inspect raw binary bytes use `mode: "raw", encoding: "base64"`. Both routes enforce the same `read_roots` and do not save converted files. For non-PDF documents, Windows uses the local Python launcher (`py -3`), and other platforms `python3`, requiring Python 3.10+. PDF text uses the bundled PDF.js dependency; scans and complex diagrams need OCR or visual inspection. Older PPT and XLS files should be converted to modern formats first. The parser ships at `dist/src/host/document_parser.py`.
 
 Host file tools exclude credential locations and protect the host policy itself from writes. A replacement or file deletion requires the current SHA-256; new copies and text creation refuse to overwrite an existing destination. Limits are 512 MiB per regular file, 2 MiB per text write and 256 KiB per read chunk. These checks coordinate mutations inside one Bridge process and do not provide atomic protection from all external writers.
 

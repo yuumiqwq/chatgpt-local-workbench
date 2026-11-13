@@ -34,8 +34,11 @@ test("read_host_file preserves identical structured and text pages through stdio
   const wire: JSONRPCMessage[] = [];
   const receive = transport.onmessage;
   transport.onmessage = message => { wire.push(message); receive?.(message); };
-  const tool = (await client.listTools()).tools.find(tool => tool.name === "read_host_file");
+  const listedTools = (await client.listTools()).tools;
+  const tool = listedTools.find(tool => tool.name === "read_host_file");
   assert.ok(tool, "the file reader must be discoverable");
+  assert.equal(listedTools.some(tool => tool.name === "read_host_document"), false,
+    "one default file-reading interface should handle text and parsed documents");
 
   for (const fixture of fixtures) await t.test(fixture.name, async () => {
     let offset = 0;
@@ -73,6 +76,22 @@ test("read_host_file preserves identical structured and text pages through stdio
       offset = body.next_offset;
     }
     assert.deepEqual(Buffer.concat(chunks), fixture.bytes);
+  });
+
+  await t.test("default auto mode keeps Markdown as ordinary UTF-8 text", async () => {
+    const result = CallToolResultSchema.parse(await client.callTool({
+      name: "read_host_file", arguments: { path: join(root, "README.md"), max_bytes: 21 }
+    }));
+    assert.equal(result.isError, undefined);
+    const block = result.content[0]!;
+    assert.ok(block.type === "text");
+    const body = JSON.parse(block.text);
+    assert.equal(body.encoding, "utf8");
+    assert.equal(body.content, "# Read test\n中文");
+    assert.equal(body.offset, 0);
+    assert.equal(body.next_offset, body.bytes_read);
+    assert.equal("offset_unit" in body, false);
+    assert.equal("total_chars" in body, false);
   });
 
   await t.test("concurrent reads retain their own file pages", async () => {
