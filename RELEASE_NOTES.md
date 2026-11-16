@@ -1,5 +1,9 @@
 # Release notes
 
+## 1.7.0-local.24 — OpenCLI-only browser backend
+
+Replace the separate Playwright MCP backend and dependency with direct OpenCLI CLI calls using the configured connected Edge login. Preserve five browser tools and both name profiles; use unique background sessions, explicit original page identities, logical tab selection, bounded subprocesses and verified action receipts. Unsupported snapshot scoping/custom depth and hidden-text waits return explicit errors. Policy remains opt-in and existing services are not restarted. Validation uses mock CLI sessions and real Node subprocesses; signed-in GUI acceptance remains a deployment check. File exports are unchanged.
+
 ## 1.7.0-local.23 — isolated browser sessions and bounded desktop sequences
 
 Add five opt-in browser tools backed by pinned official Playwright MCP, using owned headless Edge profiles, optional persistent private login storage and exclusive profile locks. Sessions remain connection-owned with no cross-instance tab recovery. Add `desktop_sequence` with 1–8 typed operations, read/wait verification and stop-on-uncertainty behavior. Increase asynchronous native process capture to 1 MiB, skip unchanged progress IPC and default result responses to 64 KiB with an optional bounded override. Both name profiles retain existing operations and share 256 STDIO configuration checks; browser acceptance uses a local static page and desktop tests use substitutes. Deployment and client metadata refresh remain separate.

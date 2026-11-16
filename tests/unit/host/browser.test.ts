@@ -1,17 +1,15 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
-import { createServer } from "node:http";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { hostname } from "node:os";
 import { join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { createToolRegistry } from "../../../src/api-names.js";
 import { BrowserPolicySchema } from "../../../src/host/browser-policy.js";
-import { BROWSER_BACKEND_METHODS, BrowserSession, browserCapabilities, browserSchemas, createBrowserBackend, registerBrowserTools, type BrowserBackend } from "../../../src/host/browser-tools.js";
+import { BrowserSession, browserCapabilities, browserSchemas, registerBrowserTools, type BrowserBackend } from "../../../src/host/browser-tools.js";
 import { HostPolicy } from "../../../src/host/host-policy.js";
 
 async function fixture(t: TestContext, overrides: Record<string, unknown> = {}) {
@@ -26,25 +24,6 @@ async function fixture(t: TestContext, overrides: Record<string, unknown> = {}) 
 const result = (text: string, isError = false): CallToolResult => ({ content: [{ type: "text", text }], isError });
 const signal = () => AbortSignal.timeout(60_000);
 const audit = async () => {};
-
-test("official pinned MCP child advertises the exact allowed input contract without launching a browser", async () => {
-  const client = new Client({ name: "browser-contract", version: "1" });
-  try {
-    await client.connect(new StdioClientTransport({ command: process.execPath,
-      args: [resolve("node_modules/@playwright/mcp/cli.js"), "--browser", "msedge", "--headless"], stderr: "ignore" }));
-    const tools = (await client.listTools()).tools;
-    for (const name of BROWSER_BACKEND_METHODS) assert.ok(tools.some(tool => tool.name === name), name);
-    for (const name of ["browser_click", "browser_type"]) {
-      const schema = tools.find(tool => tool.name === name)!.inputSchema;
-      assert.ok(schema.properties?.target); assert.ok(schema.required?.includes("target"));
-    }
-    const snapshot = tools.find(tool => tool.name === "browser_snapshot")!.inputSchema;
-    assert.ok(snapshot.properties?.target); assert.ok(snapshot.properties?.depth);
-    assert.deepEqual(tools.find(tool => tool.name === "browser_close")!.inputSchema.properties, {});
-    const version = JSON.parse(await readFile("node_modules/@playwright/mcp/package.json", "utf8")).version;
-    assert.equal(version, "0.0.85");
-  } finally { await client.close(); }
-});
 
 test("browser policy, strict arguments, clipping, failure fencing and connection disposal", async t => {
   assert.equal(BrowserPolicySchema.parse({}).enabled, false);
@@ -135,48 +114,4 @@ test("browser private state is protected and sessions cannot cross Bridge connec
   assert.equal((await first.run("browser_act", { action: "click", target: "e1" }, signal(), audit)).ok, false);
   assert.equal(launches, 1);
   await first.dispose(); await second.dispose();
-});
-
-test("real headless Edge local-page smoke, persistent profile lock and cleanup", {
-  skip: process.env.WORKBENCH_BROWSER_SMOKE !== "1", timeout: 120_000
-}, async t => {
-  const { root, policy } = await fixture(t, { profile_name: "smoke" });
-  const http = createServer((_req, res) => {
-    res.setHeader("Content-Type", "text/html");
-    res.end('<title>Workbench smoke</title><label>Name<input id="name"></label><button onclick="document.querySelector(\'output\').textContent=document.querySelector(\'input\').value">Save</button><output>Pending</output><p id="persist"></p><script>persist.textContent=localStorage.getItem("own-test")||"First visit";localStorage.setItem("own-test","Returning visit")</script>');
-  });
-  await new Promise<void>(resolve => http.listen(0, "127.0.0.1", resolve));
-  t.after(() => new Promise<void>(resolve => http.close(() => resolve())));
-  const port = (http.address() as { port: number }).port;
-  for (const profile of ["v1", "v2"] as const) {
-    const server = new McpServer({ name: "browser-smoke", version: "1" });
-    const session = registerBrowserTools(createToolRegistry(server, profile), policy, audit)!;
-    const client = new Client({ name: "browser-smoke", version: "1" });
-    const [a, b] = InMemoryTransport.createLinkedPair(); await server.connect(b); await client.connect(a);
-    const call = async (name: string, request: unknown) => {
-      const value = await client.callTool({ name, arguments: { request } });
-      assert.equal(value.isError, false, JSON.stringify(value));
-      return value.structuredContent as Record<string, unknown>;
-    };
-    try {
-      await call("browser_session", { action: "create" });
-      await assert.rejects(createBrowserBackend(policy.config.browser, signal()), /EEXIST/);
-      await call("browser_navigate", { url: `http://127.0.0.1:${port}` });
-      const snapshot = String((await call("browser_observe", { action: "snapshot" })).output);
-      assert.match(snapshot, profile === "v1" ? /First visit/ : /Returning visit/);
-      const input = snapshot.match(/textbox.*?\[ref=(e\d+)\]/u)![1];
-      const button = snapshot.match(/button.*?\[ref=(e\d+)\]/u)![1];
-      await call("browser_act", { action: "fill", target: input, text: "Local smoke" });
-      await call("browser_act", { action: "type", target: input, text: " passed" });
-      await call("browser_act", { action: "click", target: button });
-      await call("browser_observe", { action: "wait", text: "Local smoke passed" });
-      assert.match(String((await call("browser_observe", { action: "find", text: "Local smoke passed" })).output), /Local smoke passed/);
-      await call("browser_tabs", { action: "new" });
-      await call("browser_tabs", { action: "select", index: 0 });
-      await call("browser_tabs", { action: "close", index: 1 });
-      await call("browser_tabs", { action: "list" });
-    } finally { await client.close(); await server.close(); await session.dispose(); }
-    assert.deepEqual((await readdir(root)).filter(name => name.startsWith("browser-") || name.endsWith(".lock")), []);
-    assert.ok((await readdir(root)).includes("profile-smoke"));
-  }
 });

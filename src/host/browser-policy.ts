@@ -7,6 +7,9 @@ export const BrowserPolicySchema = z.object({
   allowed_hosts: z.array(z.string().min(1).max(255)).default([]),
   state_directory: z.string().min(1).optional(),
   profile_name: z.string().regex(/^[a-zA-Z0-9_-]{1,64}$/u).optional(),
+  opencli_entry: z.string().min(1).optional(),
+  opencli_context: z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/u).optional(),
+  opencli_version: z.string().regex(/^\d+\.\d+\.\d+(?:-[a-zA-Z0-9.-]+)?$/u).default("1.8.8-yuumi.1"),
   timeout_ms: z.number().int().min(1000).max(45_000).default(30_000),
   max_output_bytes: z.number().int().min(4096).max(65_536).default(16_384)
 }).strict().superRefine((value, context) => {
