@@ -16,7 +16,8 @@ import { EXPORT_BUFFER_BYTES, EXPORT_CHUNK_BYTES, EXPORT_MAX_ACTIVE, EXPORT_RESO
 import { HostError, HostPolicy } from "./host-policy.js";
 import { desktopCapabilities, registerDesktopTools } from "./desktop-tools.js";
 import type { WorkService } from "../tasks/work-service.js";
-import { MAX_HOST_PROCESSES, MAX_PROCESS_TIMEOUT_SECONDS } from "./process-runtime.js";
+import { MAX_HOST_PROCESSES, MAX_PROCESS_TIMEOUT_SECONDS, PROCESS_OUTPUT_BYTES } from "./process-runtime.js";
+import { browserCapabilities, registerBrowserTools } from "./browser-tools.js";
 import { RECOVERY_REMINDER } from "../server-instructions.js";
 
 function jsonContent(value: unknown) {
@@ -94,15 +95,17 @@ export function registerHostTools(
       total_buffer_bytes: EXPORT_BUFFER_BYTES, lifetime: "until expiry, release or process exit" },
     command_max_seconds: 45, gui_control: desktopCapabilities(policy).enabled,
     host_processes: { available: !!options.processTasks && policy.config.enabled && policy.config.commands_enabled,
-      max_active_per_bridge: MAX_HOST_PROCESSES, output_limit_bytes: 65_536,
+      max_active_per_bridge: MAX_HOST_PROCESSES, output_limit_bytes: PROCESS_OUTPUT_BYTES, default_response_output_bytes: 65_536,
       default_timeout_seconds: null, max_timeout_seconds: MAX_PROCESS_TIMEOUT_SECONDS },
     desktop: desktopCapabilities(policy),
+    browser: browserCapabilities(policy),
     work_execution: { default: "danger-full-access", options: ["read-only", "danger-full-access"], write_scope: "full access uses OS account privileges; read-only prevents model file writes" },
     policy_changes: "local administrator plus runtime restart",
     commands_are_os_sandboxed: false
   }));
   if (!policy.config.enabled) return;
   registerDesktopTools(server, policy, entry => audit.record(entry));
+  registerBrowserTools(server, policy, entry => audit.record(entry));
 
   if (policy.config.export_roots.length > 0) {
     const exports = new HostExports(policy);
@@ -256,7 +259,7 @@ export function registerHostTools(
     }));
 
   if (options.processTasks) server.registerTool("start_host_process", {
-    description: `Start an asynchronous native OS process without Codex/DSH or a model. Requires the same administrator host-command opt-in and command_roots cwd policy as run_host_command; executable must be absolute, args are passed without an implicit shell, and cwd is explicit. Returns task_id immediately after launch is scheduled. Inspect progress with task_result, wait with wait_task, stop with control_task interrupt. Optional timeout_seconds limits execution; omitted means no deadline. Captures 65536 bytes total; current account privileges, no elevation or OS sandbox. A cancelled start response after scheduling does not stop execution; never replay an uncertain start. Bridge shutdown requests tree termination; no automatic restart or resume. ${RECOVERY_REMINDER}`,
+    description: `Start an asynchronous native OS process without Codex/DSH or a model. Requires the same administrator host-command opt-in and command_roots cwd policy as run_host_command; executable must be absolute, args are passed without an implicit shell, and cwd is explicit. Returns task_id immediately after launch is scheduled. Inspect progress with task_result, wait with wait_task, stop with control_task interrupt. Optional timeout_seconds limits execution; omitted means no deadline. Captures ${PROCESS_OUTPUT_BYTES} bytes total (1 MiB); result queries default to 65536 output bytes and accept max_output_bytes up to the capture cap. Larger logs require application-written files. Current account privileges, no elevation or OS sandbox. A cancelled start response after scheduling does not stop execution; never replay an uncertain start. Bridge shutdown requests tree termination; no automatic restart or resume. ${RECOVERY_REMINDER}`,
     inputSchema: { executable: pathSchema, args: z.array(z.string().max(32_767)).max(256).default([]),
       cwd: pathSchema, timeout_seconds: z.number().min(1).max(MAX_PROCESS_TIMEOUT_SECONDS).optional() },
     annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true }

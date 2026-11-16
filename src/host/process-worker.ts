@@ -1,12 +1,14 @@
-import { launchProcess, type ProcessRequest, type ProcessView } from "./process-runtime.js";
+import { launchProcess, processViewChanged, type ProcessRequest, type ProcessView } from "./process-runtime.js";
 
 // Separate supervisor keeps draining and terminates its child if Bridge crashes
 // or closes IPC. It does not invoke a model or accept shell command strings.
 let execution: ReturnType<typeof launchProcess> | undefined;
 let sending = false;
+let previous: ProcessView | undefined;
 const send = (view: ProcessView) => {
-  if (sending || !process.connected) return;
+  if (sending || !process.connected || !processViewChanged(previous, view)) return;
   sending = true;
+  previous = view;
   process.send!({ type: "progress", view }, () => { sending = false; });
 };
 const interval = setInterval(() => { if (execution) send(execution.snapshot()); }, 500);

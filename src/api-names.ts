@@ -20,7 +20,9 @@ export const PUBLIC_TOOL_NAMES = {
   phone_drag: "phone_drag", phone_sequence: "phone_sequence", phone_display: "phone_display", phone_recover: "phone_recover",
   desktop_status: "desktop_status", desktop_list: "desktop_list", desktop_snapshot: "desktop_snapshot", desktop_find: "desktop_find",
   desktop_read: "desktop_read", desktop_act: "desktop_act", desktop_window: "desktop_window", desktop_clipboard: "desktop_clipboard",
-  desktop_screenshot: "desktop_screenshot", desktop_wait: "desktop_wait", desktop_input: "desktop_input"
+  desktop_screenshot: "desktop_screenshot", desktop_wait: "desktop_wait", desktop_input: "desktop_input",
+  desktop_sequence: "desktop_sequence", browser_session: "browser_session", browser_tabs: "browser_tabs",
+  browser_navigate: "browser_navigate", browser_observe: "browser_observe", browser_act: "browser_act"
 } as const;
 
 export function apiNameProfile(environment: Readonly<NodeJS.ProcessEnv> = process.env): ApiNameProfile {

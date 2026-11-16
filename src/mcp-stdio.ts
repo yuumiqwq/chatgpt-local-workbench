@@ -26,6 +26,8 @@ import { HostError, HostPolicy } from "./host/host-policy.js";
 import { registerHostTools } from "./host/host-tools.js";
 import { DESKTOP_INSTRUCTIONS } from "./host/desktop-tools.js";
 import { desktopEnabled } from "./host/desktop-policy.js";
+import { browserEnabled } from "./host/browser-policy.js";
+import { BROWSER_INSTRUCTIONS } from "./host/browser-tools.js";
 import { ManagedWorkspaceCatalog } from "./workspaces/managed-workspace-catalog.js";
 import { RegisteredWorkspaceRegistry } from "./workspaces/registered-workspace-registry.js";
 import { WorkspaceOnboardingService } from "./workspaces/workspace-onboarding-service.js";
@@ -136,7 +138,8 @@ async function main(): Promise<void> {
   const server = new McpServer({ name: "engineering-bridge", version: VERSION, title: `Workbench (API names ${nameProfile})` }, {
     instructions: buildServerInstructions(identity, [
       ...(phone ? [PHONE_INSTRUCTIONS, PHONE_EFFICIENCY_INSTRUCTIONS] : []),
-      ...(desktopEnabled(hostPolicy.config.enabled, hostPolicy.config.desktop) ? [DESKTOP_INSTRUCTIONS] : [])
+      ...(desktopEnabled(hostPolicy.config.enabled, hostPolicy.config.desktop) ? [DESKTOP_INSTRUCTIONS] : []),
+      ...(browserEnabled(hostPolicy.config.enabled, hostPolicy.config.browser) ? [BROWSER_INSTRUCTIONS] : [])
     ].join("\n\n") || undefined, nameProfile)
   });
   const tools = createToolRegistry(server, nameProfile);
@@ -226,7 +229,7 @@ async function main(): Promise<void> {
   // Closing STDIO and ordinary termination clean up native tasks. An abrupt
   // Bridge death also closes each supervisor's IPC, independently of handlers.
   for (const signal of ["SIGINT", "SIGTERM"] as const) process.once(signal, () => {
-    void works.shutdownHostProcesses().finally(() => process.exit(0));
+    void server.close().then(() => works.shutdownHostProcesses()).finally(() => { process.exitCode = 0; });
   });
   await server.connect(new StdioServerTransport());
 }

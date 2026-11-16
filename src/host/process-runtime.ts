@@ -1,7 +1,7 @@
 import { execFile, spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { join } from "node:path";
 
-export const PROCESS_OUTPUT_BYTES = 65_536;
+export const PROCESS_OUTPUT_BYTES = 1_048_576;
 export const MAX_HOST_PROCESSES = 8;
 export const MAX_PROCESS_TIMEOUT_SECONDS = 604_800;
 
@@ -32,6 +32,19 @@ export interface ProcessView {
   outcome_unknown?: boolean;
 }
 
+export function processViewChanged(previous: ProcessView | undefined, next: ProcessView): boolean {
+  return !previous || (Object.keys(next) as (keyof ProcessView)[]).some(key => previous[key] !== next[key]);
+}
+
+export function clipProcessOutput(view: ProcessView, maxBytes = 65_536) {
+  const stdout = Buffer.from(view.stdout), stderr = Buffer.from(view.stderr);
+  const captured = stdout.length + stderr.length;
+  const decode = (bytes: Buffer) => new TextDecoder().decode(bytes, { stream: true });
+  return { ...view, stdout: decode(stdout.subarray(0, maxBytes)),
+    stderr: decode(stderr.subarray(0, Math.max(0, maxBytes - stdout.length))),
+    output_clipped: captured > maxBytes, captured_output_bytes: captured };
+}
+
 /** One native child, bounded capture, asynchronous tree termination and observed exit. */
 export function launchProcess(request: ProcessRequest, changed: (view: ProcessView) => void = () => {}) {
   const state: ProcessView = {
@@ -53,15 +66,22 @@ export function launchProcess(request: ProcessRequest, changed: (view: ProcessVi
   child.stdin.on("error", () => {});
   child.stdin.end();
   let stdout = Buffer.alloc(0), stderr = Buffer.alloc(0);
+  let decodedStdout = "", decodedStderr = "", stdoutLength = 0, stderrLength = 0;
   let finished = false, exited = false, killing = false;
   let deadline: NodeJS.Timeout | undefined, retry: NodeJS.Timeout | undefined;
   let drain: NodeJS.Timeout | undefined;
   let resolveDone!: (view: ProcessView) => void;
   const done = new Promise<ProcessView>(resolve => { resolveDone = resolve; });
   // Streaming decode omits an incomplete final code point at a capture boundary.
-  const snapshot = (): ProcessView => ({ ...state,
-    stdout: new TextDecoder().decode(stdout, { stream: true }),
-    stderr: new TextDecoder().decode(stderr, { stream: true }) });
+  const snapshot = (): ProcessView => {
+    if (stdoutLength !== stdout.length) {
+      decodedStdout = new TextDecoder().decode(stdout, { stream: true }); stdoutLength = stdout.length;
+    }
+    if (stderrLength !== stderr.length) {
+      decodedStderr = new TextDecoder().decode(stderr, { stream: true }); stderrLength = stderr.length;
+    }
+    return { ...state, stdout: decodedStdout, stderr: decodedStderr };
+  };
   const append = (target: Buffer, chunk: Buffer) => {
     const remaining = PROCESS_OUTPUT_BYTES - stdout.length - stderr.length;
     if (chunk.length > remaining) state.truncated = true;

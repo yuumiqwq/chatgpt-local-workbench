@@ -6,6 +6,7 @@ import { DEFAULT_WAIT_TASK_TIMEOUT_SECONDS, waitTaskMaxTimeoutSeconds } from "./
 import { RECOVERY_REMINDER } from "./server-instructions.js";
 import { HostError } from "./host/host-policy.js";
 import { serializeError } from "./core/errors.js";
+import { clipProcessOutput, PROCESS_OUTPUT_BYTES } from "./host/process-runtime.js";
 
 function jsonContent(value: unknown) {
   return {
@@ -13,13 +14,13 @@ function jsonContent(value: unknown) {
   };
 }
 
-function taskResultContent(view: TaskView | undefined) {
+function taskResultContent(view: TaskView | undefined, maxOutputBytes = 65_536) {
   if (view === undefined) {
     return { isError: true, ...jsonContent({ error: "UNKNOWN_TASK" }) };
   }
   const taskView = { task_id: view.taskId, state: view.state,
     kind: view.kind ?? "agent",
-    ...(view.process === undefined ? {} : { process: view.process }),
+    ...(view.process === undefined ? {} : { process: clipProcessOutput(view.process, maxOutputBytes) }),
     ...(view.executor === undefined ? {} : { executor: view.executor }),
     ...(view.threadId === undefined ? {} : { thread_id: view.threadId }),
     ...(view.access === undefined ? {} : { access: view.access }),
@@ -45,23 +46,26 @@ export function registerTaskResultTools(
   service: Pick<WorkService, "taskView" | "waitTask">
 ): void {
   const maxWaitSeconds = waitTaskMaxTimeoutSeconds();
+  const maxOutput = z.number().int().min(0).max(PROCESS_OUTPUT_BYTES).default(65_536)
+    .describe("Maximum combined process stdout/stderr bytes in this response; 0 returns metadata. Capture retains up to 1 MiB; output_clipped is separate from capture truncated.");
   server.registerTool("task_result", {
     description: "Inspect an agent or native process task by task_id, including running status, bounded process stdout/stderr, or terminal output/error. kind distinguishes agent from process. ready marks a terminal record; inspect process.outcome_unknown/error after lost monitoring, and verify artifacts separately. This tool is read-only.",
-    inputSchema: { task_id: z.string() },
+    inputSchema: { task_id: z.string(), max_output_bytes: maxOutput },
     annotations: { readOnlyHint: true, destructiveHint: false }
-  }, ({ task_id }) => taskResultContent(service.taskView(task_id)));
+  }, ({ task_id, max_output_bytes }) => taskResultContent(service.taskView(task_id), max_output_bytes));
 
   server.registerTool("wait_task", {
     description: `Wait until a task is ready, or the timeout expires. Returns the current task view without interrupting the task. This tool is read-only. ${RECOVERY_REMINDER}`,
     inputSchema: {
       task_id: z.string(),
+      max_output_bytes: maxOutput,
       timeout_seconds: z.number().min(1).max(maxWaitSeconds).optional().default(DEFAULT_WAIT_TASK_TIMEOUT_SECONDS)
     },
     annotations: { readOnlyHint: true, destructiveHint: false }
-  }, async ({ task_id, timeout_seconds }, { signal }) => {
+  }, async ({ task_id, timeout_seconds, max_output_bytes }, { signal }) => {
     const view = await service.waitTask(task_id, timeout_seconds, signal);
     signal.throwIfAborted();
-    return taskResultContent(view);
+    return taskResultContent(view, max_output_bytes);
   });
 }
 

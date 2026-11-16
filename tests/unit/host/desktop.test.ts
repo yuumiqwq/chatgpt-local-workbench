@@ -302,7 +302,7 @@ test("STDIO exposes desktop instructions only for the configured host, no real C
       await client.connect(new StdioClientTransport({ command: process.execPath,
         args: [resolve("dist/src/mcp-stdio.js"), path], stderr: "pipe" }));
       const tools = (await client.listTools()).tools;
-      assert.equal(tools.filter(tool => tool.name.startsWith("desktop_")).length, enabled ? Object.keys(desktopSchemas).length : 0);
+      assert.equal(tools.filter(tool => tool.name.startsWith("desktop_")).length, enabled ? Object.keys(desktopSchemas).length + 1 : 0);
       assert.equal(client.getInstructions()?.includes("agent-desktop CLI directly"), enabled);
       const capabilities = CallToolResultSchema.parse(await client.callTool({ name: "host_capabilities", arguments: {} }));
       const body = JSON.parse((capabilities.content[0] as { text: string }).text);

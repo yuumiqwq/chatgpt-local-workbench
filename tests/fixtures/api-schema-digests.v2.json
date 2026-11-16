@@ -1,4 +1,9 @@
 {
+  "browser_act": "919a68f08ba84f111917b3285db2d9818018793c3a51c53c3529c51156177e7a",
+  "browser_navigate": "356bf0acd02a61c3e9a434f8d64bc0d1dbd1212e62bfee46aa42c806b38e909b",
+  "browser_observe": "20c8a7cd935a36921f0acd46c745abd0f055096a789ffc856c9a85a9c081dbaf",
+  "browser_session": "c230b6691e5598247c9f1f25d19b3e1d2aa5ced3785e950a584acd3651adc556",
+  "browser_tabs": "782509fe91db17d4069f98e1588622ba62947e99a84d29510904511924987932",
   "continue_work": "84e7c9c9e97eb424273999a43489e03d6e7cfcf3421eac4dfc2262f99ceba1ab",
   "control_task": "28873492d634e344ddf194a1d61316ff9e3814b89bb62bec5db93a92dcde040a",
   "copy_host_file": "529b3c9658bb2c2691fe9c4e64fe9c0e1aef23068a412fd21309763306ee6c5f",
@@ -11,12 +16,13 @@
   "desktop_list": "c6cee7795e89077060704d59a066b601adce3ca72ee979df275ee843ffc9bbcc",
   "desktop_read": "34abd4c2fd3e7aae1adfa45ad7f329417d80ddc8419afa30ea6fb6792b2cfcd4",
   "desktop_screenshot": "baffe4ebba3fa7e2ec4d4d0087c26de97b2b6c55e8e7597276eec30d0c199d7c",
+  "desktop_sequence": "cd827127c171f824c8efa96971e53208c5f389056ed35972950746576dfdcaf7",
   "desktop_snapshot": "b84f44d3bfffc1b860cf57367821ca6aa4d99c9a92e892b1acf919e942712bc5",
   "desktop_status": "b8e454489a54d8aa1a25ef1ac461f8d62496c6bf5a5f0733fbf72c8d1eb9a964",
   "desktop_wait": "2808535f488318a59d570e6cd8bc25694d7b44b1fca494dce6718fb837be7557",
   "desktop_window": "75ca18300810359bb016a8ae5f1a757e527d5f8b11153312a887f02b2d0ba61c",
   "export_host_file": "8939905e673d32ed995a9e57231106cf1886df622ef411eea3de80aafd9f8b6d",
-  "get_task": "82719d75347c27afedb93ded51ad695390cfebaadf358075638df1578906475b",
+  "get_task": "b1a3ddd2e35de5ee9684ca272d4334ac8b4016821697ccc8e577093f633115c9",
   "host_capabilities": "55afd3d22cd35ef3b5e3dc2e2651ad10a586f230804ece94dcd65ac7867639fb",
   "list_codex_history_projects": "d399255412dbae0bfe3d027560bb65124ef11f91f8f8e1509fe05b0425a18710",
   "list_codex_threads": "427f2972df277d51227dfea352c08e5138aa9e765de8f2aaf1d2f2b2bd1e357d",
@@ -48,6 +54,6 @@
   "run_agent_once": "6cb0e93a28f6e111f8d24ed545e2508b8dbfefef2663aefb9cde8710e551aea4",
   "run_host_command": "e1f456b58aa7214683887e6499239c1b18d1519814fa8136437730ea2a246418",
   "start_host_process": "0566676df7c94bdec4aab5123e621c05cd9dff7c172943392173eaaaa418983e",
-  "wait_task": "8781f65ebcf012f7a5726c09c7c57c11947c0fdb10bca66c5172a7248138d54d",
+  "wait_task": "937df9cedf48eac5e5741322b6bbe0b7a52b5ae323a402802d604b61777564ab",
   "write_host_text_file": "da7fea8378fe79d5783f25902fe959d90b2b2c34c887a847927f9d383642ab72"
 }

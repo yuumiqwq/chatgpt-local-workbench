@@ -9,6 +9,7 @@
   "command_roots": [],
   "commands_enabled": false,
   "desktop": { "enabled": false },
+  "browser": { "enabled": false },
   "codex_homes": [],
   "protected_paths": [],
   "follow_links": false

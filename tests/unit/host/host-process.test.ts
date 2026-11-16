@@ -13,7 +13,8 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { HostPolicy } from "../../../src/host/host-policy.js";
 import { registerHostTools } from "../../../src/host/host-tools.js";
-import { launchProcess, MAX_HOST_PROCESSES, PROCESS_OUTPUT_BYTES } from "../../../src/host/process-runtime.js";
+import { clipProcessOutput, launchProcess, MAX_HOST_PROCESSES, PROCESS_OUTPUT_BYTES, processViewChanged } from "../../../src/host/process-runtime.js";
+import { superviseProcess } from "../../../src/host/host-process.js";
 import { WorkService } from "../../../src/tasks/work-service.js";
 import { RegisteredWorkspaceRegistry } from "../../../src/workspaces/registered-workspace-registry.js";
 import { registerTaskControlTool, registerTaskResultTools } from "../../../src/task-result-tools.js";
@@ -79,6 +80,49 @@ test("capture is bounded across both streams and drains excessive output without
   const result = (await f.service.waitTask(task.task_id, 10))!.process!;
   assert.equal(result.exit_code, 0); assert.equal(result.truncated, true);
   assert.equal(Buffer.byteLength(result.stdout) + Buffer.byteLength(result.stderr), PROCESS_OUTPUT_BYTES);
+});
+
+test("1 MiB supervisor skips repeated saturated snapshots and clipping preserves stored UTF-8", async t => {
+  const f = await fixture(t);
+  let updates = 0, ipcBytes = 0;
+  const started = performance.now();
+  const execution = superviseProcess({ executable: process.execPath, cwd: f.cwd,
+    args: ["-e", "process.stdout.write('x'.repeat(2097152));setTimeout(()=>{},1800)"] }, view => {
+    updates++; ipcBytes += Buffer.byteLength(JSON.stringify(view));
+  });
+  t.after(() => execution.stop());
+  const view = await execution.done;
+  assert.equal(view.exit_code, 0); assert.equal(view.stdout.length, 1_048_576); assert.equal(view.truncated, true);
+  assert.ok(updates <= 3, `unexpected unchanged progress retransmission: ${updates}`);
+  assert.ok(ipcBytes < 2_200_000, `progress IPC bytes: ${ipcBytes}`);
+  assert.ok(performance.now() - started < 15_000);
+  assert.equal(processViewChanged(view, { ...view }), false);
+  assert.equal(processViewChanged(view, { ...view, timed_out: true }), true);
+  const utf8 = { ...view, stdout: "中文", stderr: "diagnostic" };
+  assert.equal(clipProcessOutput(utf8, 4).stdout, "中");
+  assert.equal(clipProcessOutput(utf8, 0).stdout, "");
+  assert.equal(utf8.stdout, "中文");
+  t.diagnostic(JSON.stringify({ updates, ipc_bytes: ipcBytes, elapsed_ms: Math.round(performance.now() - started) }));
+});
+
+test("process result and wait default to 64 KiB responses and allow explicit bounded capture retrieval", async t => {
+  const f = await fixture(t);
+  const receipt = await f.start("process.stdout.write('x'.repeat(1200000))");
+  await f.service.waitTask(receipt.task_id, 10);
+  const server = new McpServer({ name: "process-output", version: "1" });
+  registerTaskResultTools(server, f.service);
+  const client = new Client({ name: "process-output", version: "1" });
+  const [a, b] = InMemoryTransport.createLinkedPair(); await server.connect(b); await client.connect(a);
+  t.after(async () => { await client.close(); await server.close(); });
+  for (const name of ["task_result", "wait_task"]) for (const max of [undefined, 0, 1_048_576]) {
+    const response = await client.callTool({ name, arguments: { task_id: receipt.task_id, ...(max === undefined ? {} : { max_output_bytes: max }) } });
+    assert.equal(response.isError, undefined);
+    const view = JSON.parse((response.content as { text: string }[])[0]!.text).process;
+    assert.equal(view.stdout.length, max ?? 65_536); assert.equal(view.truncated, true);
+    assert.equal(view.output_clipped, max !== 1_048_576); assert.equal(view.captured_output_bytes, 1_048_576);
+  }
+  assert.equal(f.create().taskView(receipt.task_id)?.process?.stdout.length, 1_048_576);
+  assert.equal((await client.callTool({ name: "task_result", arguments: { task_id: receipt.task_id, max_output_bytes: 1_048_577 } })).isError, true);
 });
 
 test("wait timeout and cancellation preserve the process, progress is readable from another service", async t => {

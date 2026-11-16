@@ -8,9 +8,9 @@
 
 `tests/unit/api-inventory.test.ts` 用 TypeScript AST 遍历全部 `src/**/*.ts` 的工具、资源及 prompt 注册调用，再与实际 STDIO `tools/list` 比对；动态名称来自 `desktopSchemas` 和 `phoneSchemas`，没有只扫描字面量。测试锁定注册模块，新增注册入口会要求人工补充清单。完整 JSON inputSchema 的 SHA-256 固定在 `tests/fixtures/api-schema-digests.json`，防止无意修改名称或签名；本文每个工具的输入字段与实际 schema 自动核对。
 
-两个名称配置共 128 组真实子进程组合覆盖 host × commands × exports × phone × desktop，其中桌面为关闭、只观察、全部启用、主机名不匹配四种状态。另测两种名称配置的独立手机入口、24 组细分桌面权限和功能恢复。依赖路径使用测试替身，只发现工具，不连接真实手机或桌面。完整 schema、目录字节量及每组计数保存在运行测试的工作树 `codex-generated/api-audit/`。文档、README 中的当前计数也有断言；RELEASE_NOTES 中的 24-tool 数字属于历史版本记录，保留其当时含义。
+两个名称配置共 256 组真实子进程组合覆盖 host × commands × exports × phone × desktop × browser，其中桌面为关闭、只观察、全部启用、主机名不匹配四种状态。另测两种名称配置的独立手机入口、24 组细分桌面权限和功能恢复。矩阵仅发现工具，不连接真实手机或桌面；独立浏览器验收在本地静态页面运行无头 Edge。完整 schema、目录字节量及每组计数保存在运行测试的工作树 `codex-generated/api-audit/`。文档、README 中的当前计数也有断言；RELEASE_NOTES 中的 24-tool 数字属于历史版本记录，保留其当时含义。
 
-<!-- api-counts: {"disabled":15,"host":26,"exports":29,"phone":11,"desktop_max":11,"all":51} -->
+<!-- api-counts: {"disabled":15,"host":26,"exports":29,"phone":11,"desktop_max":12,"browser":5,"all":57} -->
 
 | 配置 | 工具数 | 规则 |
 | --- | ---: | --- |
@@ -19,8 +19,9 @@
 | 再配置 export_roots | 29 | 增加 3 及一个 resource template |
 | phone 开启 | +11 | 与 host 开关独立；含未带前缀的 server_status 及旧文档漏列的 phone_drag |
 | desktop 只观察 | +6 | status/list/snapshot/find/read/wait；仍要求 host、desktop 及 hostname 匹配 |
-| desktop 全部权限 | +11 | 可再增加 act/window/clipboard/screenshot/input |
-| 所有模块 | 51 | 没有全局固定的“26 个工具”承诺 |
+| desktop 全部权限 | +12 | 可再增加 act/window/clipboard/screenshot/input/sequence |
+| browser 开启 | +5 | 独立无头 Edge，由 host、browser 及 hostname 共同授权 |
+| 所有模块 | 57 | 没有全局固定的“26 个工具”承诺 |
 | 独立 phone STDIO | 11 | 相同 phoneSchemas、服务及指令，不含 host_capabilities 或通用任务 |
 
 没有独立 document-enabled 开关：host 关闭则解析入口消失，host 开启即注册；Python 缺失会在调用时报告，PDF.js 随包提供。OpenCLI、MinerU、Git、Appium、scrcpy、ADB 是调用依赖或本机 CLI，不是额外 MCP 注册工具。没有 prompt 注册；唯一资源模板为 `host-export` / `bridge-export://{export_id}`，仅授权 export 时存在，`resources/list` 不枚举缓冲数据。
@@ -47,8 +48,8 @@
 | `bind_project` | 项目 | project_path | 路径 → workspace_id | project_root 内登记目录 | 同步 | 保留；不创建文件，身份登记仍是写操作 |
 | `create_project` | 项目 | name, parent | 路径 → workspace_id | project_root 内 mkdir + git init + 登记 | 同步子进程 | 保留；不是从模板创建项目 |
 | `list_tasks` | 任务 | created_after, kind, limit, offset, state | task_id | 只读共享 runs 元数据 | 同步 | 新增；补足丢失回执恢复，无相同功能旧接口 |
-| `task_result` | 任务 | task_id | task_id | 只读共享结果 | 同步 | v1 保留；v2 get_task，明确也查询运行中状态/输出 |
-| `wait_task` | 任务 | task_id, timeout_seconds | task_id | 只读；取消仅结束等待 | 有界等待 | 保留；超时返回当前视图 |
+| `task_result` | 任务 | max_output_bytes, task_id | task_id | 只读共享结果 | 同步 | v1 保留；v2 get_task，明确也查询运行中状态/输出 |
+| `wait_task` | 任务 | max_output_bytes, task_id, timeout_seconds | task_id | 只读；取消仅结束等待 | 有界等待 | 保留；超时返回当前视图 |
 | `control_task` | 任务 | action, instruction, task_id | task_id | 仅持有 live handle 的实例；依执行器能力 | 控制请求 | 保留 interrupt/steer；interrupt 回执不证明已退出 |
 | `host_capabilities` | 能力 | — | server_version；version 是策略格式 | 只读本实例加载的策略 | 同步 | 保留；暴露不等于授权，更不等于依赖可用 |
 | `reload_workspace_config` | 维护 | — | 当前配置文件 | host 开启且无待执行任务 | 同步 | 保留；只重载 workspace，不重载 host/phone/identity |
@@ -102,6 +103,12 @@
 | `desktop_screenshot` | 桌面 | request | window_id | host + desktop + hostname；逐命令再校验；allow_screenshot | 同步 CLI ≤43s | 保留 request 分组；观察 |
 | `desktop_wait` | 桌面 | request | namespace / ref / app | host + desktop + hostname；逐命令再校验 | 同步 CLI ≤43s | 保留 request 分组；观察 |
 | `desktop_input` | 桌面 | request | namespace / ref / window_id / coordinates | host + desktop + hostname；逐命令再校验；mutations + headed + physical_input | 同步 CLI ≤43s | 保留 request 分组；修改后需观察验证 |
+| `desktop_sequence` | 桌面 | request | 单一 namespace，1–8 步 | host + desktop + hostname + mutations；逐步原有校验 | 有界序列 ≤120s | 首次失败、不确定或验证未通过即停止 |
+| `browser_session` | 浏览器 | request | 单个连接；私有配置独占锁 | host + browser + hostname | 官方 MCP 子进程 | 创建/关闭无头 Edge；无跨实例恢复 |
+| `browser_tabs` | 浏览器 | request | 当前连接的标签页 | host + browser + hostname | 同步 MCP | 最多 32 个标签页 |
+| `browser_navigate` | 浏览器 | request | 当前标签页 | host + browser + hostname | 同步 MCP | HTTP(S)，错误后不自动重放 |
+| `browser_observe` | 浏览器 | request | 当前页 snapshot ref | host + browser + hostname | 同步 MCP | 有界快照、查找、文本等待 |
+| `browser_act` | 浏览器 | request | 已观察的当前页 ref | host + browser + hostname | 同步 MCP | 点击、填写、输入；后续观察验证 |
 
 ## 术语、标识与状态不变量
 

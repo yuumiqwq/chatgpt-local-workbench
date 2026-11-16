@@ -16,6 +16,7 @@ import { desktopCapabilities, registerDesktopTools } from "../../src/host/deskto
 import { VERSION } from "../../src/version.js";
 import { desktopSchemas } from "../../src/host/desktop-commands.js";
 import { phoneSchemas } from "../../src/phone/service.js";
+import { browserSchemas } from "../../src/host/browser-tools.js";
 
 const base = ["list_work", "open_work", "continue_work", "run_temp", "finish_work", "manage_work", "work_retention",
   "list_workspaces", "bind_project", "create_project", "task_result", "wait_task", "control_task", "list_tasks", "host_capabilities"];
@@ -23,9 +24,10 @@ const host = ["list_codex_projects", "list_codex_threads", "read_host_file", "li
   "write_host_text_file", "copy_file", "move_file", "delete_file", "run_host_command", "start_host_process", "reload_workspace_config"];
 const exports = ["export_host_file", "read_export_chunk", "release_host_export"];
 const desktopRead = ["desktop_status", "desktop_list", "desktop_snapshot", "desktop_find", "desktop_read", "desktop_wait"];
-const desktopAll = Object.keys(desktopSchemas);
+const desktopAll = [...Object.keys(desktopSchemas), "desktop_sequence"];
+const browserAll = Object.keys(browserSchemas);
 const phoneAll = Object.keys(phoneSchemas);
-const names = [...base, ...host, ...exports, ...desktopAll, ...phoneAll].sort();
+const names = [...base, ...host, ...exports, ...desktopAll, ...phoneAll, ...browserAll].sort();
 const auditDir = resolve("codex-generated/api-audit");
 const body = (result: unknown) => JSON.parse((result as { content: { text: string }[] }).content[0]!.text);
 const digest = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
@@ -59,10 +61,10 @@ test("source inventory covers every literal and dynamic MCP registration, resour
     }
   }
   await scan("src");
-  assert.deepEqual([...owners].sort(), ["api-names.ts", "host/desktop-tools.ts", "host/host-tools.ts", "mcp-stdio.ts", "phone/tools.ts", "task-result-tools.ts", "work-tools.ts"]);
-  assert.deepEqual(dynamic.sort(), ["api-names.ts", "host/desktop-tools.ts", "phone/tools.ts"]);
+  assert.deepEqual([...owners].sort(), ["api-names.ts", "host/browser-tools.ts", "host/desktop-tools.ts", "host/host-tools.ts", "mcp-stdio.ts", "phone/tools.ts", "task-result-tools.ts", "work-tools.ts"]);
+  assert.deepEqual(dynamic.sort(), ["api-names.ts", "host/browser-tools.ts", "host/desktop-tools.ts", "phone/tools.ts"]);
   assert.deepEqual(resources, ["host-export"]);
-  assert.deepEqual([...literal, ...desktopAll, ...phoneAll].sort(), names);
+  assert.deepEqual([...literal, ...Object.keys(desktopSchemas), ...phoneAll, ...browserAll].sort(), names);
   assert.deepEqual(Object.keys(PUBLIC_TOOL_NAMES).sort(), names);
   const audit = await readFile("docs/api-architecture-audit.zh-CN.md", "utf8");
   const rows = [...audit.matchAll(/^\| `([a-z_]+)` \|/gm)].map(match => match[1]).sort();
@@ -70,7 +72,7 @@ test("source inventory covers every literal and dynamic MCP registration, resour
   assert.match(await readFile("src/phone/mcp-stdio.ts", "utf8"), /registerPhoneTools\(tools/);
 });
 
-test("production STDIO registration matrix agrees with policy, schema contract and documentation", { timeout: 300_000 }, async t => {
+test("production STDIO registration matrix agrees with policy, schema contract and documentation", { timeout: 600_000 }, async t => {
   await mkdir(auditDir, { recursive: true });
   const root = await mkdtemp(join(auditDir, "matrix-"));
   const exportRoot = join(root, "exports"); await mkdir(exportRoot);
@@ -82,14 +84,16 @@ test("production STDIO registration matrix agrees with policy, schema contract a
     const schemaDigests: Record<string, string> = {};
     for (const enabled of [false, true]) for (const commands of [false, true])
       for (const exporting of [false, true]) for (const phone of [false, true])
-        for (const desktop of ["off", "read", "full", "wrong-host"] as const) {
-          const label = `${profile}: host=${enabled}, commands=${commands}, exports=${exporting}, phone=${phone}, desktop=${desktop}`;
+        for (const desktop of ["off", "read", "full", "wrong-host"] as const) for (const browser of [false, true]) {
+          const label = `${profile}: host=${enabled}, commands=${commands}, exports=${exporting}, phone=${phone}, desktop=${desktop}, browser=${browser}`;
           await t.test(label, async () => {
             const config = join(root, "workspaces.json");
             await writeFile(config, "[]");
             await writeFile(config + ".host-policy.json", JSON.stringify({ version: 1, enabled,
               commands_enabled: commands, command_roots: [exportRoot], read_roots: [exportRoot],
-              export_roots: exporting ? [exportRoot] : [], desktop: desktop === "off" ? {} : {
+              export_roots: exporting ? [exportRoot] : [], browser: browser ? {
+                enabled: true, allowed_hosts: [hostname()], state_directory: join(root, "browser-state")
+              } : {}, desktop: desktop === "off" ? {} : {
                 enabled: true, allowed_hosts: [desktop === "wrong-host" ? "nonmatching-test-host" : hostname()],
                 executable: process.execPath, executable_sha256: "0".repeat(64), state_directory: join(root, "desktop-state"),
                 allow_mutations: desktop === "full", allow_headed: desktop === "full",
@@ -106,7 +110,7 @@ test("production STDIO registration matrix agrees with policy, schema contract a
               const tools = (await client.listTools()).tools;
               const desktopNames = !enabled || desktop === "off" || desktop === "wrong-host" ? [] : desktop === "full" ? desktopAll : desktopRead;
               const expected = [...base, ...(enabled ? host : []), ...(enabled && exporting ? exports : []),
-                ...(phone ? phoneAll : []), ...desktopNames].map(name => publicToolName(name, profile)).sort();
+                ...(phone ? phoneAll : []), ...desktopNames, ...(enabled && browser ? browserAll : [])].map(name => publicToolName(name, profile)).sort();
               assert.deepEqual(tools.map(tool => tool.name).sort(), expected);
               const instructions = client.getInstructions()!;
               assert.ok(instructions.includes(toolText("run_temp only for one-off agent instructions", profile)));
@@ -118,12 +122,16 @@ test("production STDIO registration matrix agrees with policy, schema contract a
               assert.match(instructions, /list_tasks/);
               assert.equal(instructions.includes("Optional Android module:"), phone);
               assert.equal(instructions.includes("Desktop tools invoke"), desktopNames.length > 0);
+              assert.equal(instructions.includes("Browser tools use"), enabled && browser);
               const capabilities = body(await client.callTool({ name: "host_capabilities", arguments: {} }));
               assert.equal(capabilities.server_version, VERSION);
               assert.equal(capabilities.api_name_profile, profile);
               assert.match(client.getServerVersion()!.title!, new RegExp(profile));
               assert.equal(capabilities.version, 1, "policy schema version remains separate");
               assert.equal(capabilities.host_processes.available, enabled && commands);
+              assert.equal(capabilities.host_processes.output_limit_bytes, 1_048_576);
+              assert.equal(capabilities.browser.enabled, enabled && browser);
+              assert.deepEqual(capabilities.browser.tool_names.sort(), enabled && browser ? [...browserAll].sort() : []);
               assert.equal(capabilities.file_exports.enabled, enabled && exporting);
               assert.equal(capabilities.gui_control, desktopNames.length > 0);
               assert.deepEqual(capabilities.desktop.tool_names.sort(), [...desktopNames].sort());
@@ -170,7 +178,7 @@ test("production STDIO registration matrix agrees with policy, schema contract a
       assert.deepEqual(documented, Object.keys(tool.inputSchema.properties ?? {}).sort(), tool.name + " documented parameters");
     }
     const counts = { disabled: base.length, host: base.length + host.length, exports: base.length + host.length + exports.length,
-      phone: phoneAll.length, desktop_max: desktopAll.length, all: names.length };
+      phone: phoneAll.length, desktop_max: desktopAll.length, browser: browserAll.length, all: names.length };
     assert.ok(audit.includes(`<!-- api-counts: ${JSON.stringify(counts)} -->`));
     assert.match(await readFile("README.md", "utf8"), new RegExp(`提供 ${counts.host} 个工具.*提供 ${counts.exports} 个工具.*提供 ${counts.disabled} 个工具`));
     assert.match(await readFile("README.en.md", "utf8"), new RegExp(`exposes ${counts.host} tools.*${counts.exports} with.*${counts.disabled} when`));
@@ -196,7 +204,7 @@ test("desktop partial permission combinations share discovery and capability nam
         try {
           await server.connect(b); await client.connect(a);
           const tools = (await client.listTools()).tools;
-          const expected = [...desktopRead, ...(mutations ? ["desktop_act", "desktop_window"] : []),
+          const expected = [...desktopRead, ...(mutations ? ["desktop_act", "desktop_window", "desktop_sequence"] : []),
             ...(clipboard !== "disabled" ? ["desktop_clipboard"] : []), ...(screenshot ? ["desktop_screenshot"] : []),
             ...(mutations && physical ? ["desktop_input"] : [])].sort();
           assert.deepEqual(tools.map(tool => tool.name).sort(), expected);

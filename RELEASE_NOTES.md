@@ -1,5 +1,9 @@
 # Release notes
 
+## 1.7.0-local.23 — isolated browser sessions and bounded desktop sequences
+
+Add five opt-in browser tools backed by pinned official Playwright MCP, using owned headless Edge profiles, optional persistent private login storage and exclusive profile locks. Sessions remain connection-owned with no cross-instance tab recovery. Add `desktop_sequence` with 1–8 typed operations, read/wait verification and stop-on-uncertainty behavior. Increase asynchronous native process capture to 1 MiB, skip unchanged progress IPC and default result responses to 64 KiB with an optional bounded override. Both name profiles retain existing operations and share 256 STDIO configuration checks; browser acceptance uses a local static page and desktop tests use substitutes. Deployment and client metadata refresh remain separate.
+
 
 ## 1.7.0-local.22 — explicit public name profiles
 
