@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import test from 'node:test';
 import { prepareInstall, renderLaunchAgent } from '../../scripts/install-macos-auto-update.mjs';
 
@@ -17,7 +17,7 @@ test('macOS launchd updater has bounded intervals and escapes XML safely', () =>
   assert.match(plist, /<key>RunAtLoad<\/key><true\/>/u);
   assert.match(plist, /<key>TMPDIR<\/key><string>[^<]+<\/string>/u);
   assert.match(plist, /a &amp; b/u);
-  assert.match(renderLaunchAgent({ ...input, nodePath: '/private/tooling/node/bin/node' }), /\/private\/tooling\/node\/bin:\/opt\/homebrew\/bin/u);
+  assert.ok(renderLaunchAgent({ ...input, nodePath: '/private/tooling/node/bin/node' }).includes(`<key>PATH</key><string>${dirname(resolve('/private/tooling/node/bin/node'))}:/opt/homebrew/bin`));
   assert.doesNotMatch(plist, /a & b/u);
   assert.match(plist, /com\.yuumi\.workbench\.auto-update/u);
   assert.throws(() => renderLaunchAgent({ ...input, intervalSeconds: 15 }), /interval/u);
