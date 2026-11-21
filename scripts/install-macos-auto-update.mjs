@@ -2,8 +2,8 @@
 // Install a per-user macOS launchd update job for the shared Workbench repository.
 import { spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
-import { homedir, hostname } from 'node:os';
+import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
+import { homedir, hostname, tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { loadConfig } from './deploy-windows.mjs';
@@ -37,6 +37,7 @@ export function renderLaunchAgent({ nodePath, runner, configFile, workingDirecto
     '  <key>WorkingDirectory</key><string>' + xml(absolute(workingDirectory, 'workingDirectory')) + '</string>',
     '  <key>EnvironmentVariables</key><dict>',
     '    <key>PATH</key><string>' + xml([dirname(absolute(nodePath, 'nodePath')), '/opt/homebrew/bin', '/usr/local/bin', '/usr/bin', '/bin', '/usr/sbin', '/sbin'].join(':')) + '</string>',
+    '    <key>TMPDIR</key><string>' + xml(realpathSync(tmpdir())) + '</string>',
     '  </dict>',
     '  <key>StartInterval</key><integer>' + intervalSeconds + '</integer>',
     '  <key>RunAtLoad</key><true/>',
