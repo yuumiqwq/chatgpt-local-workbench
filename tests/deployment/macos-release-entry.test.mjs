@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -15,14 +15,14 @@ test('release entry resolves a verified active version and uses checkout as firs
     writeFileSync(join(dir, 'dist', 'src', 'mcp-stdio.js'), '');
   }
   const settings = { releasesDirectory: releases, pointerFile: pointer, fallbackDirectory: repo };
-  assert.equal(selectWorkbenchEntry(settings).directory, repo);
+  assert.equal(selectWorkbenchEntry(settings).directory, realpathSync(repo));
   const commit = 'a'.repeat(40);
   writeFileSync(join(release, '.workbench-release.json'), JSON.stringify({ version: 1, commit }));
-  writeFileSync(pointer, JSON.stringify({ version: 1, commit, directory: release }));
-  assert.equal(selectWorkbenchEntry(settings).directory, release);
-  writeFileSync(pointer, JSON.stringify({ version: 1, commit: 'b'.repeat(40), directory: release }));
+  writeFileSync(pointer, JSON.stringify({ version: 1, commit, directory: realpathSync(release) }));
+  assert.equal(selectWorkbenchEntry(settings).directory, realpathSync(release));
+  writeFileSync(pointer, JSON.stringify({ version: 1, commit: 'b'.repeat(40), directory: realpathSync(release) }));
   assert.throws(() => selectWorkbenchEntry(settings), /manifest/u);
-  writeFileSync(pointer, JSON.stringify({ version: 1, commit, directory: repo }));
+  writeFileSync(pointer, JSON.stringify({ version: 1, commit, directory: realpathSync(repo) }));
   assert.throws(() => selectWorkbenchEntry(settings), /outside/u);
 });
 
