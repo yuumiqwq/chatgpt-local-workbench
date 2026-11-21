@@ -21,7 +21,7 @@ const TRUSTED_CWD = "/trusted/workspace";
 
 test("ephemeral full-access turns use native flags without naming persistent history", async () => {
   const invocations: Invocation[] = [];
-  const executor = new CodexExecutor(TRUSTED_CWD, fakeStarter({ appServerOutput: "done" }, invocations));
+  const executor = new CodexExecutor(TRUSTED_CWD, fakeStarter({ appServerOutput: "done" }, invocations), {});
   const result = await executor.execute({ taskId: TASK_ID, instruction: "one off", ephemeral: true,
     sandbox: "danger-full-access", threadName: "must not persist" });
   assert.equal(result.kind, "completed");

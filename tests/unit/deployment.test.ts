@@ -10,6 +10,8 @@ import { HostPolicy } from "../../src/host/host-policy.js";
 // Include the standalone deployment suite in the existing npm test command and CI.
 await import(pathToFileURL(resolve("tests/deployment/deploy-windows.test.mjs")).href);
 await import(pathToFileURL(resolve("tests/deployment/agent-desktop-install.test.mjs")).href);
+await import(pathToFileURL(resolve("tests/deployment/macos-auto-update.test.mjs")).href);
+await import(pathToFileURL(resolve("tests/deployment/macos-release-entry.test.mjs")).href);
 const { acquireLock } = await import(pathToFileURL(resolve("scripts/deploy-windows.mjs")).href);
 
 test("deployment registry lock prevents a real WorkService executor from starting", async t => {
