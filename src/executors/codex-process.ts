@@ -32,9 +32,9 @@ export function startCodexAppServer(cwd: string, host: Readonly<NodeJS.ProcessEn
     args.push("-c", "model=" + JSON.stringify(bridgeModel));
   }
   if (host.ENGINEERING_BRIDGE_CODEX_DISABLE_MCP === "1") {
-    // An empty config table merges with existing entries instead of disabling
-    // them. Disable each configured server explicitly, including ourselves.
-    const names = new Set(["engineering-bridge"]);
+    // Only override servers present in config.toml. An override for an absent
+    // server creates an incomplete table and Codex rejects its transport.
+    const names = new Set<string>();
     try {
       const config = readFileSync(join(host.CODEX_HOME ?? join(homedir(), ".codex"), "config.toml"), "utf8");
       for (const match of config.matchAll(/^\s*\[mcp_servers\.([A-Za-z0-9_-]+|"[^"\r\n]+"|'[^'\r\n]+')\]/gmu)) {

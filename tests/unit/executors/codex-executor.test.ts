@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough, Writable } from "node:stream";
@@ -1220,7 +1220,7 @@ test("native resume uses the requested thread and configured provider without ch
   assert.equal(result.kind, "completed");
   assert.deepEqual(nativeIds, ["thread-1"]);
   assert.equal(invocations[0]!.options.windowsHide, true);
-  assert.deepEqual(invocations[0]!.args, ["app-server", "--stdio", "-c", 'model_provider="openai"', "-c", 'mcp_servers.engineering-bridge.enabled=false']);
+  assert.deepEqual(invocations[0]!.args, ["app-server", "--stdio", "-c", 'model_provider="openai"']);
   const messages = invocations[0]!.stdin.trim().split("\n").map(line => JSON.parse(line));
   assert.equal(messages.some(message => message.method === "thread/start"), false);
   const resume = messages.find(message => message.method === "thread/resume");
@@ -1230,6 +1230,30 @@ test("native resume uses the requested thread and configured provider without ch
   assert.equal(resume.params.excludeTurns, true);
   const turn = messages.find(message => message.method === "turn/start");
   assert.deepEqual(turn.params.sandboxPolicy, { type: "readOnly", networkAccess: false });
+});
+
+test("MCP isolation disables only configured servers and does not invent an invalid transport", async () => {
+  const home = mkdtempSync(join(tmpdir(), "codex-bridge-mcp-isolation-"));
+  try {
+    writeFileSync(join(home, "config.toml"), [
+      '[mcp_servers.engineering-bridge]',
+      'command = "node"',
+      '[mcp_servers.another]',
+      'url = "https://example.test/mcp"',
+      ""
+    ].join("\n"));
+    const invocations: Invocation[] = [];
+    const executor = new CodexExecutor(TRUSTED_CWD, fakeStarter({ appServerOutput: "isolated" }, invocations), {
+      CODEX_HOME: home, ENGINEERING_BRIDGE_CODEX_DISABLE_MCP: "1"
+    }, "linux");
+    const result = await executor.execute({ taskId: TASK_ID, instruction: "check" });
+    assert.equal(result.kind, "completed");
+    assert.deepEqual(invocations[0]!.args, ["app-server", "--stdio",
+      "-c", "mcp_servers.engineering-bridge.enabled=false",
+      "-c", "mcp_servers.another.enabled=false"]);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
 });
 
 test("native full-access resume applies full access to both thread and turn", async () => {

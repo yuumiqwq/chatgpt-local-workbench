@@ -14,7 +14,7 @@ function fixture(mode: "ok" | "hold" | "oversize" | "error" = "ok") {
     assert.equal(options.windowsHide, true);
     assert.equal(options.shell, false);
     assert.equal(options.env?.PRIVATE_KEY, undefined);
-    assert.equal(args.includes('mcp_servers.engineering-bridge.enabled=false'), true);
+    assert.equal(args.includes('mcp_servers.engineering-bridge.enabled=false'), false);
     const child = new EventEmitter();
     const stdout = new PassThrough();
     const stderr = new PassThrough();
