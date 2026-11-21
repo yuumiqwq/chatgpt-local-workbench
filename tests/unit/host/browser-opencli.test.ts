@@ -25,7 +25,7 @@ async function fixture(t: TestContext) {
   return { root, entry, state, policy };
 }
 
-function mockCli() {
+function mockCli(inventory: (items: unknown[]) => unknown = items => items) {
   const calls: string[][] = [], pages = new Map<string, string>();
   let serial = 0;
   const settings = { pid: "1234", failAction: false, badReceipt: false, failClose: false, lostPage: false, extension: "1.0.27", version: "1.8.8-yuumi.1" };
@@ -40,7 +40,7 @@ function mockCli() {
     const command = args[6];
     assert.ok(!["bind", "unbind", "focus", "eval", "keys", "network"].includes(command!));
     if (command === "tab" && args[7] === "new") { const page = `page-${++serial}`; pages.set(session, page); return JSON.stringify({ page, url: null }); }
-    if (command === "tab" && args[7] === "list") return JSON.stringify(pages.has(session) ? [{ page: settings.lostPage ? "foreign-page" : pages.get(session), url: "https://local.invalid/", title: "Owned page", active: false }] : []);
+    if (command === "tab" && args[7] === "list") return JSON.stringify(inventory(pages.has(session) ? [{ page: settings.lostPage ? "foreign-page" : pages.get(session), url: "https://local.invalid/", title: "Owned page", active: false }] : []));
     if (command === "close") { if (settings.failClose) throw new BrowserCliError("BROWSER_TIMEOUT", "test", true); pages.delete(session); return "Closed browser session"; }
     assert.equal(args[7], "--tab"); assert.equal(args[8], pages.get(session));
     if (command === "state") return "url: https://local.invalid/\ntitle: Owned page [55]\n---\n  [12]<input name=Name />\n  |scroll[8]|<button>Save [99]</button>\n  [77] {\"compound\":true}";
@@ -95,6 +95,83 @@ test("OpenCLI owns unique sessions/page IDs, transforms refs, uses literal argv 
   assert.equal(cli.pages.size, 0); assert.deepEqual(await readdir(state), []);
 });
 
+test("extra pages never replace the original page or cause foreground binding", async t => {
+  const { policy } = await fixture(t);
+  const extra = { page: "foreign-page", url: "https://local.invalid/", title: "Owned page", active: true };
+  const cli = mockCli(items => [extra, ...items, { ...extra, page: "another-page" }]);
+  const backend = await createOpenCliBackend(policy.config.browser, signal(), cli.execute);
+  const [session, page] = [...cli.pages.entries()][0]!;
+  await backend.call("browser_tabs", { action: "select", index: 0 }, signal());
+  const listed = await backend.call("browser_tabs", { action: "list" }, signal());
+  assert.equal((listed.content[0] as { text: string }).text.split("\n").length, 1);
+  for (const name of ["browser_click", "browser_type"] as const) {
+    const snapshot = await backend.call("browser_snapshot", {}, signal());
+    const target = /ref=(e\d+)/u.exec(JSON.stringify(snapshot))![1]!;
+    await backend.call(name, { target, text: "test" }, signal());
+  }
+  await backend.call("browser_wait_for", { text: "test", time: 1 }, signal());
+  await backend.call("browser_navigate", { url: "https://local.invalid/next" }, signal());
+  await backend.close();
+  const commands = cli.calls.filter(args => args[2] === "browser");
+  assert.equal(commands.filter(args => args[6] === "tab" && args[7] === "new").length, 1);
+  for (const args of commands) {
+    assert.equal(args[3], session);
+    assert.deepEqual(args.slice(4, 6), ["--window", "background"]);
+    assert.ok(!args.includes("bind") && !args.includes("focus") && !args.includes("select"));
+    if (!["tab", "close"].includes(args[6]!)) assert.deepEqual(args.slice(7, 9), ["--tab", page]);
+  }
+});
+
+test("invalid original-page inventories fail closed before dispatch", async t => {
+  const original = { page: "page-1", url: "https://local.invalid/", title: "Owned page" };
+  const cases: [string, unknown][] = [
+    ["missing original", []],
+    ["mismatched original ID", [{ ...original, page: "foreign-page", active: true }]],
+    ["duplicate original", [original, original]],
+    ["duplicate original with invalid metadata", [original, { ...original, title: null }]],
+    ["non-array", original],
+    ["null inventory", null],
+    ["non-string page ID", [{ ...original, page: 1 }]],
+    ["invalid original URL", [{ ...original, url: null }]],
+    ["invalid original title", [{ ...original, title: 1 }]],
+    ["malformed entries", [null, {}, "page-1"]]
+  ];
+  for (const [name, value] of cases) await t.test(name, async t => {
+    const { policy } = await fixture(t); let invalid = false;
+    const cli = mockCli(items => invalid ? value : items);
+    const backend = await createOpenCliBackend(policy.config.browser, signal(), cli.execute);
+    await backend.call("browser_snapshot", {}, signal()); invalid = true;
+    await assert.rejects(backend.call("browser_click", { target: "e1" }, signal()),
+      error => error instanceof BrowserCliError && error.code === "BROWSER_LEASE_LOST" && !error.uncertain);
+    assert.ok(!cli.calls.some(args => args[6] === "click"));
+    assert.equal(cli.calls.filter(args => args[7] === "new").length, 1);
+    await backend.close();
+  });
+});
+
+test("original-page loss after dispatch remains unverified with unknown delivery", async t => {
+  for (const action of ["open", "click", "fill"] as const) {
+    const { policy } = await fixture(t); const cli = mockCli();
+    const execute: BrowserCommand = async (args, signal, options) => {
+      const result = await cli.execute(args, signal, options);
+      if (args[6] === action) cli.settings.lostPage = true;
+      return result;
+    };
+    const session = new BrowserSession(policy, (config, signal) => createOpenCliBackend(config, signal, execute));
+    await session.run("browser_session", { action: "create" }, signal(), audit);
+    await session.run("browser_observe", { action: "snapshot" }, signal(), audit);
+    const name = action === "open" ? "browser_navigate" : "browser_act";
+    const request = action === "open" ? { url: "https://local.invalid/next" } :
+      action === "click" ? { action, target: "e1" } : { action, target: "e1", text: "test" };
+    const result = await session.run(name, request, signal(), audit);
+    assert.deepEqual(result.error, { code: "BROWSER_ACTION_UNVERIFIED", delivery: "unknown", retry: "unsafe" });
+    const blocked = await session.run(name, request, signal(), audit);
+    assert.equal((blocked.error as { code: string }).code, "BROWSER_OBSERVATION_REQUIRED");
+    assert.equal(cli.calls.filter(args => args[6] === action).length, 1);
+    await session.dispose();
+  }
+});
+
 test("tab mutation followed by failed inventory remains unknown and cannot be replayed", async t => {
   const { policy } = await fixture(t); const cli = mockCli(); let inventories = 0;
   const execute: BrowserCommand = async (args, signal, options) => {
@@ -103,7 +180,7 @@ test("tab mutation followed by failed inventory remains unknown and cannot be re
   };
   const backend = await createOpenCliBackend(policy.config.browser, signal(), execute);
   await assert.rejects(backend.call("browser_tabs", { action: "new" }, signal()),
-    error => error instanceof BrowserCliError && error.uncertain);
+    error => error instanceof BrowserCliError && error.code === "BROWSER_ACTION_UNVERIFIED" && error.uncertain);
   assert.equal(cli.calls.filter(args => args[7] === "new").length, 2);
   await backend.close();
 });
@@ -129,13 +206,14 @@ test("backend prerequisite failures never create a browser tab", async t => {
 
 test("unknown or unverified mutations fence later writes and are not replayed", async t => {
   for (const failure of ["failAction", "badReceipt"] as const) {
-    const { policy } = await fixture(t); const cli = mockCli();
+    const { policy } = await fixture(t);
+    const cli = mockCli(items => [{ page: "foreign-page", url: "https://local.invalid/", title: "Extra", active: true }, ...items]);
     const session = new BrowserSession(policy, (config, signal) => createOpenCliBackend(config, signal, cli.execute));
     await session.run("browser_session", { action: "create" }, signal(), audit);
     await session.run("browser_observe", { action: "snapshot" }, signal(), audit);
     cli.settings[failure] = true;
     const value = await session.run("browser_act", { action: "fill", target: "e1", text: "test" }, signal(), audit);
-    assert.equal((value.error as { retry: string }).retry, "unsafe");
+    assert.deepEqual(value.error, { code: failure === "failAction" ? "BROWSER_TIMEOUT" : "BROWSER_ACTION_UNVERIFIED", delivery: "unknown", retry: "unsafe" });
     assert.equal((await session.run("browser_act", { action: "fill", target: "e1", text: "test" }, signal(), audit)).ok, false);
     assert.equal(cli.calls.filter(args => args[6] === "fill").length, 1);
     await session.dispose();

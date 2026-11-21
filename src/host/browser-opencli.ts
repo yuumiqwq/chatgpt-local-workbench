@@ -95,9 +95,10 @@ export async function createOpenCliBackend(config: BrowserPolicy, signal: AbortS
   };
   const inventory = async (tab: OwnedTab, callSignal: AbortSignal): Promise<ListedTab> => {
     const value = parse(await command(tab, ["tab", "list"], callSignal));
-    if (!Array.isArray(value) || value.length !== 1) throw new BrowserCliError("BROWSER_LEASE_LOST", "The owned session no longer has exactly its original tab.");
-    const item = value[0] as ListedTab;
-    if (!item || typeof item.page !== "string" || item.page !== tab.page || typeof item.url !== "string" || typeof item.title !== "string") {
+    if (!Array.isArray(value)) throw new BrowserCliError("BROWSER_LEASE_LOST", "The owned session inventory is not an array.");
+    const matches = value.filter(item => item && typeof item.page === "string" && item.page === tab.page);
+    const item = matches[0] as ListedTab | undefined;
+    if (matches.length !== 1 || !item || typeof item.url !== "string" || typeof item.title !== "string") {
       throw new BrowserCliError("BROWSER_LEASE_LOST", "The original owned page identity is unavailable; no fallback tab is selected.");
     }
     return item;
