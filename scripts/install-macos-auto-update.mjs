@@ -36,7 +36,7 @@ export function renderLaunchAgent({ nodePath, runner, configFile, workingDirecto
     '  </array>',
     '  <key>WorkingDirectory</key><string>' + xml(absolute(workingDirectory, 'workingDirectory')) + '</string>',
     '  <key>EnvironmentVariables</key><dict>',
-    '    <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>',
+    '    <key>PATH</key><string>' + xml([dirname(absolute(nodePath, 'nodePath')), '/opt/homebrew/bin', '/usr/local/bin', '/usr/bin', '/bin', '/usr/sbin', '/sbin'].join(':')) + '</string>',
     '  </dict>',
     '  <key>StartInterval</key><integer>' + intervalSeconds + '</integer>',
     '  <key>RunAtLoad</key><true/>',
