@@ -10,7 +10,9 @@
 
 两个名称配置共 256 组真实子进程组合覆盖 host × commands × exports × phone × desktop × browser，其中桌面为关闭、只观察、全部启用、主机名不匹配四种状态。另测两种名称配置的独立手机入口、24 组细分桌面权限和功能恢复。矩阵仅发现工具，不连接真实手机或桌面；独立浏览器验收在本地静态页面运行无头 Edge。完整 schema、目录字节量及每组计数保存在运行测试的工作树 `codex-generated/api-audit/`。文档、README 中的当前计数也有断言；RELEASE_NOTES 中的 24-tool 数字属于历史版本记录，保留其当时含义。
 
-<!-- api-counts: {"disabled":15,"host":26,"exports":29,"phone":11,"desktop_max":12,"browser":5,"all":57} -->
+矩阵同时在 exports 启用组合中配置 transfer，用于固定新增接口的签名；两项授权仍相互独立。`host-transfer.test.ts` 单独覆盖 host、transfer 开关及 v1/v2 名称配置，并在 commands 与 exports 均关闭时验证 transfer 的注册和权限检查。
+
+<!-- api-counts: {"disabled":15,"host":26,"exports":29,"phone":11,"desktop_max":12,"browser":5,"all":58} -->
 
 | 配置 | 工具数 | 规则 |
 | --- | ---: | --- |
@@ -21,7 +23,8 @@
 | desktop 只观察 | +6 | status/list/snapshot/find/read/wait；仍要求 host、desktop 及 hostname 匹配 |
 | desktop 全部权限 | +12 | 可再增加 act/window/clipboard/screenshot/input/sequence |
 | browser 开启 | +5 | 独立无头 Edge，由 host、browser 及 hostname 共同授权 |
-| 所有模块 | 57 | 没有全局固定的“26 个工具”承诺 |
+| transfer 开启 | +1 | 独立默认关闭；host 与 transfer 同时启用时注册，两个名称配置均为 transfer_file |
+| 所有模块 | 58 | 没有全局固定的“26 个工具”承诺 |
 | 独立 phone STDIO | 11 | 相同 phoneSchemas、服务及指令，不含 host_capabilities 或通用任务 |
 
 没有独立 document-enabled 开关：host 关闭则解析入口消失，host 开启即注册；Python 缺失会在调用时报告，PDF.js 随包提供。OpenCLI、MinerU、Git、Appium、scrcpy、ADB 是调用依赖或本机 CLI，不是额外 MCP 注册工具。没有 prompt 注册；唯一资源模板为 `host-export` / `bridge-export://{export_id}`，仅授权 export 时存在，`resources/list` 不枚举缓冲数据。
@@ -38,6 +41,7 @@
 | 工具 | 域 | 输入字段，机器核对 | 标识与作用域 | 访问 / 策略 | 调用方式 | 状态及命名取舍 |
 | --- | --- | --- | --- | --- | --- | --- |
 | `list_work` | 工作 | archived, cwd, limit, offset, query, status, workspace_id | work_id | 只读注册表 | 同步 | 保留；仅持久工作，不是全部任务 |
+| `transfer_file` | 文件 | destination, expected_bytes, expected_sha256, source_path, source_peer, source_root | 本地配置的设备及远端读取目录别名 | transfer 独立授权、目标 write_roots | 同步 SFTP | 默认关闭；核对后原子发布，拒绝覆盖；详见 [传输配置](file-transfers.md) |
 | `open_work` | 工作 | access, cwd, name, thread_id, work_id, workspace_id | work_id / thread_id / workspace_id | 登记及原生 unarchive；cwd 读策略 | 同步 RPC | 保留；prepare/reopen/adopt，不运行模型 |
 | `continue_work` | 工作 | access, instruction, model, reasoning_effort, work_id | work_id → task_id / thread_id | 每次执行 access；继承工作设置 | 异步任务 | 保留；持久 Codex turn |
 | `run_temp` | agent | access, cwd, executor, instruction, model, reasoning_effort, work_id, workspace_id | task_id；可关联 work_id | access 默认完全访问；cwd 读策略 | 异步任务 | v1 保留；v2 run_agent_once；临时会话，结果仍保留 |

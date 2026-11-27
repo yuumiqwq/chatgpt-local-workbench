@@ -19,6 +19,8 @@ import type { WorkService } from "../tasks/work-service.js";
 import { MAX_HOST_PROCESSES, MAX_PROCESS_TIMEOUT_SECONDS, PROCESS_OUTPUT_BYTES } from "./process-runtime.js";
 import { browserCapabilities, registerBrowserTools } from "./browser-tools.js";
 import { RECOVERY_REMINDER } from "../server-instructions.js";
+import { HostTransfers, transferCapabilities } from "./host-transfer.js";
+import { transferInput } from "./transfer-policy.js";
 
 function jsonContent(value: unknown) {
   return { content: [{ type: "text" as const, text: JSON.stringify(value) }] };
@@ -99,6 +101,7 @@ export function registerHostTools(
       default_timeout_seconds: null, max_timeout_seconds: MAX_PROCESS_TIMEOUT_SECONDS },
     desktop: desktopCapabilities(policy),
     browser: browserCapabilities(policy),
+    transfer: transferCapabilities(policy),
     work_execution: { default: "danger-full-access", options: ["read-only", "danger-full-access"], write_scope: "full access uses OS account privileges; read-only prevents model file writes" },
     policy_changes: "local administrator plus runtime restart",
     commands_are_os_sandboxed: false
@@ -106,6 +109,19 @@ export function registerHostTools(
   if (!policy.config.enabled) return;
   registerDesktopTools(server, policy, entry => audit.record(entry));
   registerBrowserTools(server, policy, entry => audit.record(entry));
+
+  if (policy.config.transfer.enabled) {
+    const transfers = new HostTransfers(policy);
+    const onclose = server.server.onclose;
+    server.server.onclose = () => { transfers.dispose(); onclose?.(); };
+    server.registerTool("transfer_file", {
+      description: "Receive one file directly from a configured peer over OpenSSH SFTP. Select source_peer and source_root aliases from host_capabilities, supply a literal relative source_path, an absolute local destination in write_roots, and independently obtained expected_sha256 and expected_bytes. The destination parent must exist. Verifies bytes and SHA-256 before atomic publication; never overwrites. Cancellation stops the transfer and removes temporary files. Requires separate administrator opt-in; no shell, remote host or SSH arguments are accepted.",
+      inputSchema: transferInput,
+      annotations: { ...mutation, openWorldHint: true }
+    }, (request, { signal }) => safe("transfer_file", {
+      source_peer: request.source_peer, source_root: request.source_root, destination: request.destination
+    }, () => transfers.transfer(request, signal), value => ({ ...jsonContent(value), structuredContent: value })));
+  }
 
   if (policy.config.export_roots.length > 0) {
     const exports = new HostExports(policy);

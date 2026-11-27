@@ -27,7 +27,7 @@ const desktopRead = ["desktop_status", "desktop_list", "desktop_snapshot", "desk
 const desktopAll = [...Object.keys(desktopSchemas), "desktop_sequence"];
 const browserAll = Object.keys(browserSchemas);
 const phoneAll = Object.keys(phoneSchemas);
-const names = [...base, ...host, ...exports, ...desktopAll, ...phoneAll, ...browserAll].sort();
+const names = [...base, ...host, ...exports, "transfer_file", ...desktopAll, ...phoneAll, ...browserAll].sort();
 const auditDir = resolve("codex-generated/api-audit");
 const body = (result: unknown) => JSON.parse((result as { content: { text: string }[] }).content[0]!.text);
 const digest = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
@@ -91,6 +91,9 @@ test("production STDIO registration matrix agrees with policy, schema contract a
             await writeFile(config, "[]");
             await writeFile(config + ".host-policy.json", JSON.stringify({ version: 1, enabled,
               commands_enabled: commands, command_roots: [exportRoot], read_roots: [exportRoot],
+              transfer: exporting ? { enabled: true, executable: process.execPath, ssh_executable: process.execPath,
+                peers: { fixture: { host: "100.64.0.2", user: "readonly", identity_file: join(root, "unused-key"),
+                  known_hosts_file: join(root, "unused-pins"), read_roots: { exports: "/exports/reviewed" } } } } : {},
               export_roots: exporting ? [exportRoot] : [], browser: browser ? {
                 enabled: true, allowed_hosts: [hostname()], state_directory: join(root, "browser-state")
               } : {}, desktop: desktop === "off" ? {} : {
@@ -109,7 +112,7 @@ test("production STDIO registration matrix agrees with policy, schema contract a
                 env: { ENGINEERING_BRIDGE_API_NAME_PROFILE: profile } }));
               const tools = (await client.listTools()).tools;
               const desktopNames = !enabled || desktop === "off" || desktop === "wrong-host" ? [] : desktop === "full" ? desktopAll : desktopRead;
-              const expected = [...base, ...(enabled ? host : []), ...(enabled && exporting ? exports : []),
+              const expected = [...base, ...(enabled ? host : []), ...(enabled && exporting ? [...exports, "transfer_file"] : []),
                 ...(phone ? phoneAll : []), ...desktopNames, ...(enabled && browser ? browserAll : [])].map(name => publicToolName(name, profile)).sort();
               assert.deepEqual(tools.map(tool => tool.name).sort(), expected);
               const instructions = client.getInstructions()!;
@@ -133,6 +136,7 @@ test("production STDIO registration matrix agrees with policy, schema contract a
               assert.equal(capabilities.browser.enabled, enabled && browser);
               assert.deepEqual(capabilities.browser.tool_names.sort(), enabled && browser ? [...browserAll].sort() : []);
               assert.equal(capabilities.file_exports.enabled, enabled && exporting);
+              assert.equal(capabilities.transfer.enabled, enabled && exporting);
               assert.equal(capabilities.gui_control, desktopNames.length > 0);
               assert.deepEqual(capabilities.desktop.tool_names.sort(), [...desktopNames].sort());
               assert.doesNotMatch(tools.find(tool => tool.name === "host_capabilities")!.description!, /Desktop GUI control is not provided/);

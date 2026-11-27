@@ -54,6 +54,7 @@
   "run_agent_once": "6cb0e93a28f6e111f8d24ed545e2508b8dbfefef2663aefb9cde8710e551aea4",
   "run_host_command": "e1f456b58aa7214683887e6499239c1b18d1519814fa8136437730ea2a246418",
   "start_host_process": "0566676df7c94bdec4aab5123e621c05cd9dff7c172943392173eaaaa418983e",
+  "transfer_file": "47501fa1c56a1bada95dfe523d36fa4eecc6d9eee554cb2b8642339bcac675d7",
   "wait_task": "937df9cedf48eac5e5741322b6bbe0b7a52b5ae323a402802d604b61777564ab",
   "write_host_text_file": "da7fea8378fe79d5783f25902fe959d90b2b2c34c887a847927f9d383642ab72"
 }

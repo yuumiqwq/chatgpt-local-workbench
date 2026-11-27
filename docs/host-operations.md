@@ -65,6 +65,7 @@ Replace every directory with an existing local path. `codex_homes` identifies ac
 | `export_roots` | Explicit file-delivery directories within read_roots. Empty by default; whole volumes and linked directories are rejected. Enables three export tools and the MCP file resource template. |
 | `export_max_bytes`, `export_ttl_seconds` | Per-export size limit defaults to and permits at most 512,000,000 bytes (decimal 512 MB); lifetime 30–3600 seconds, default 3600. Existing explicit values require an administrator update and later restart. See [file delivery](file-exports.md). |
 | `write_roots` | Paths available to Bridge file mutations. This does not select executor access. |
+| `transfer` | Separate default-off OpenSSH SFTP receiver using configured peer/root aliases, pinned keys and verified no-overwrite publication inside write_roots. Adds one tool independently of commands_enabled. See [direct file transfers](file-transfers.md). |
 | `command_roots`, `commands_enabled` | Opt-in command execution and allowed starting directories. Commands can access other paths under the OS account. |
 | `desktop` | Separate, disabled-by-default agent-desktop policy with explicit hostname, verified native executable and private state directory. Controls semantic actions, headed/physical input, screenshot, clipboard and allowlisted app launch. See [desktop setup](desktop.md). |
 | `codex_homes` | Profiles used for history listing and verified rollout lookup. The first is the default home for new work. |

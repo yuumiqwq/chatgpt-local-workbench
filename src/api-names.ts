@@ -13,6 +13,7 @@ export const PUBLIC_TOOL_NAMES = {
   list_codex_projects: "list_codex_history_projects", list_codex_threads: "list_codex_threads",
   read_host_file: "read_host_file", list_host_path: "list_host_directory", write_host_text_file: "write_host_text_file",
   copy_file: "copy_host_file", move_file: "move_host_file", delete_file: "delete_host_file",
+  transfer_file: "transfer_file",
   run_host_command: "run_host_command", start_host_process: "start_host_process", reload_workspace_config: "reload_workspace_config",
   export_host_file: "export_host_file", read_export_chunk: "read_export_chunk", release_host_export: "release_host_export",
   server_status: "phone_status", phone_acquire_control: "phone_acquire_control", phone_release_control: "phone_release_control",
