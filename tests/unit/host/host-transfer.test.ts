@@ -20,10 +20,16 @@ async function fixture(t: TestContext, overrides: Record<string, unknown> = {}) 
   const base = resolve("codex-generated/transfer-tests"); await mkdir(base, { recursive: true });
   const root = await mkdtemp(join(base, "case-"));
   t.after(() => rm(root, { recursive: true, force: true }));
+  // The runner substitutes Node for these fixture executables. Protect only the
+  // fixture's tool directory, even when Node is installed above the checkout.
+  const tools = join(root, "tools"); await mkdir(tools);
+  const executable = join(tools, "sftp.exe"), sshExecutable = join(tools, "ssh.exe");
+  await writeFile(executable, "TEST_ONLY_MOCK_EXECUTABLE");
+  await writeFile(sshExecutable, "TEST_ONLY_MOCK_EXECUTABLE");
   const allowed = join(root, "allowed"); await mkdir(allowed);
   const identity = join(allowed, "private-identity"), known = join(allowed, "host-pins");
   await writeFile(identity, "TEST_ONLY_NOT_A_KEY"); await writeFile(known, "TEST_ONLY_NOT_A_HOST_KEY");
-  const config = { enabled: true, executable: process.execPath, ssh_executable: process.execPath,
+  const config = { enabled: true, executable, ssh_executable: sshExecutable,
     peers: { legion: { host: "100.64.0.2", user: "workbench_read", port: 2222,
       identity_file: identity, known_hosts_file: known, read_roots: { exports: "/exports/reviewed" } } }, ...overrides };
   const policy = await HostPolicy.create({ version: 1, enabled: true, read_roots: [allowed], write_roots: [allowed],
@@ -68,7 +74,7 @@ test("literal paths reject traversal, Windows aliases, globs and SFTP injection"
 test("SSH invocation pins identity, host keys, executables and noninteractive direct transport", async t => {
   const f = await fixture(t), config = f.policy.config.transfer;
   const args = sftpArguments(config, config.peers.legion!, join(f.root, "empty config"));
-  assert.deepEqual(args.slice(0, 12), ["-F", join(f.root, "empty config"), "-S", process.execPath,
+  assert.deepEqual(args.slice(0, 12), ["-F", join(f.root, "empty config"), "-S", f.config.ssh_executable,
     "-b", "-", "-B", "32768", "-R", "1", "-P", "2222"]);
   for (const option of ["BatchMode=yes", "IdentitiesOnly=yes", "IdentityAgent=none", "StrictHostKeyChecking=yes",
     "PasswordAuthentication=no", "KbdInteractiveAuthentication=no", "GlobalKnownHostsFile=none",
@@ -114,6 +120,23 @@ test("peer aliases, write roots, protected paths and expected size fail before l
   ] as const) await assert.rejects(transfers.transfer({ ...f.request, ...change }), code(expected));
   await assert.rejects(f.policy.check(f.identity, "read"), code("HOST_PATH_DENIED"));
   await clean(f.allowed);
+});
+
+test("executable directories protect nested releases while sibling test data remains writable", async t => {
+  const f = await fixture(t);
+  const nested = join(f.root, "tools", "releases", "candidate", "codex-generated");
+  await mkdir(nested, { recursive: true });
+  const policy = await HostPolicy.create({ version: 1, enabled: true, write_roots: [f.root],
+    transfer: f.config }, join(f.root, "layout-policy.json"));
+  let launches = 0;
+  const transfers = new HostTransfers(policy, async (job, signal) => { launches++; await receive(job, signal); });
+  for (const destination of [f.config.executable, f.config.ssh_executable, join(nested, "received.bin")]) {
+    await assert.rejects(transfers.transfer({ ...f.request, destination }), code("HOST_PATH_DENIED"));
+  }
+  assert.equal(launches, 0);
+  await transfers.transfer(f.request);
+  assert.equal(launches, 1);
+  assert.deepEqual(await readFile(f.request.destination), payload);
 });
 
 test("existing and racing destinations are never overwritten", async t => {
@@ -171,7 +194,7 @@ test("cancellation before launch, concurrency limit and disconnect cleanup", asy
 
 function mockRunner(mode: string, pids: number[], ready?: () => void): SftpRunner {
   return (job, signal) => runSftp(job, signal, (executable, args, options) => {
-    assert.equal(executable, process.execPath);
+    assert.equal(executable, job.executable);
     assert.equal(args.at(-1), "100.64.0.2");
     assert.equal(options.shell, false); assert.equal(options.windowsHide, true);
     assert.equal(options.env?.SSH_AUTH_SOCK, undefined); assert.equal(options.env?.PATH, undefined);

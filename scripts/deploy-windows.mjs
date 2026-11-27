@@ -124,7 +124,7 @@ export function loadConfig(file) {
   return config;
 }
 
-function atomicJson(file, value) {
+export function atomicJson(file, value) {
   const temporary = `${file}.${randomUUID()}.tmp`;
   try {
     writeFileSync(temporary, JSON.stringify(value, null, 2) + '\n', { flag: 'wx', mode: 0o600 });
@@ -261,7 +261,9 @@ export function runCommand({ executable, args, cwd, env, timeout, signal, log, e
   });
 }
 
-export async function deploy(configFile, mode = 'check', { signal, onEvent = () => {}, ensureDesktop = ensureAgentDesktop } = {}) {
+export async function deploy(configFile, mode = 'check', {
+  signal, onEvent = () => {}, ensureDesktop = ensureAgentDesktop, beforeActivate = async () => {}, expectedTarget,
+} = {}) {
   if (!['check', 'apply', 'ensure-desktop'].includes(mode)) fail('USAGE', 'Mode must be check, apply or ensure-desktop.');
   const config = loadConfig(configFile);
   mkdirSync(config.stateDirectory, { recursive: true });
@@ -321,7 +323,7 @@ export async function deploy(configFile, mode = 'check', { signal, onEvent = () 
   let releaseDeployment, releaseState;
   const registryLocks = [];
   const releaseRegistries = () => { while (registryLocks.length) registryLocks.pop()(); };
-  let journal;
+  let journal, validatingCandidate = false, unusedRelease;
   const journalFile = join(config.stateDirectory, 'deployment.json');
   const save = phase => {
     journal.phase = phase;
@@ -353,6 +355,9 @@ export async function deploy(configFile, mode = 'check', { signal, onEvent = () 
     await git('fetch', '--no-tags', '--no-recurse-submodules', 'origin', '+refs/heads/main:refs/remotes/origin/main');
     const head = await git('rev-parse', 'HEAD');
     const target = await git('rev-parse', 'refs/remotes/origin/main');
+    if (expectedTarget !== undefined && target !== expectedTarget) {
+      fail('TARGET_CHANGED', 'The automatic update candidate changed after checking; retry on the next cycle.', 2);
+    }
     try { await git('merge-base', '--is-ancestor', head, target); }
     catch (error) {
       if (error.code !== 'COMMAND') throw error;
@@ -377,11 +382,15 @@ export async function deploy(configFile, mode = 'check', { signal, onEvent = () 
       event('result', result);
       return result;
     }
-    // The same .lock protocol is used by WorkService.save before it launches an executor.
-    // Hold it until the old runtime is confirmed stopped, then release for startup.
-    for (const registry of [...config.workRegistries].sort()) registryLocks.push(acquireLock(registry + '.lock', 'Bridge deployment'));
-    assertIdle(config.workRegistries);
-    const registryDigests = fileDigests(config.workRegistries);
+    const lockRegistries = () => {
+      // Match WorkService.save; release only after the old runtime stops.
+      for (const registry of [...config.workRegistries].sort()) registryLocks.push(acquireLock(registry + '.lock', 'Bridge deployment'));
+      assertIdle(config.workRegistries);
+      return fileDigests(config.workRegistries);
+    };
+    // In-place installs still require exclusion throughout validation. Isolated
+    // releases leave live execution available until the activation boundary.
+    let registryDigests = config.releases ? undefined : lockRegistries();
     await clean();
     if (await git('rev-parse', 'HEAD') !== head) fail('HEAD_CHANGED', 'HEAD changed during preflight.');
     if (completed) {
@@ -421,8 +430,10 @@ export async function deploy(configFile, mode = 'check', { signal, onEvent = () 
       }
       atomicJson(join(buildDirectory, '.workbench-release.json'), { version: 1, scope: config.scope, commit: target });
       journal.release_directory = buildDirectory;
+      unusedRelease = buildDirectory;
       journal.previous_pointer = previousPointer === null ? null : JSON.parse(previousPointer.toString('utf8'));
     }
+    validatingCandidate = true;
     for (const [phase, args] of [
       ['installing', ['ci']], ['typechecking', ['run', 'typecheck']],
       ['testing', ['test']], ['building', ['run', 'build']],
@@ -430,12 +441,23 @@ export async function deploy(configFile, mode = 'check', { signal, onEvent = () 
       save(phase);
       await invoke('npm ' + args.join(' '), process.execPath, [config.npmCli, ...args], process.env, config.commandTimeout, buildDirectory);
     }
+    journal.build_digest = buildDigest(buildDirectory);
+    validatingCandidate = false;
     await clean();
     if (await git('rev-parse', 'HEAD') !== target) fail('HEAD_CHANGED', 'HEAD changed during validation.');
     assertIdle(config.workRegistries);
+    if (registryDigests) assertDigests(config.workRegistries, registryDigests);
+    assertDigests(protectedFiles, digests);
+    save('validated');
+    // Auto deployment takes the phone lock and pauses its guardian here, after
+    // npm has exited. Tasks/configuration can change while it awaits the guardian.
+    await beforeActivate({ target });
+    if (config.releases) registryDigests = lockRegistries();
+    await clean();
+    if (await git('rev-parse', 'HEAD') !== target) fail('HEAD_CHANGED', 'HEAD changed before activation.');
+    assertIdle(config.workRegistries);
     assertDigests(config.workRegistries, registryDigests);
     assertDigests(protectedFiles, digests);
-    journal.build_digest = buildDigest(buildDirectory);
     if (config.releases) {
       const pointerNow = existsSync(config.releases.pointer) ? readFileSync(config.releases.pointer) : null;
       if (previousPointer === null ? pointerNow !== null : !pointerNow?.equals(previousPointer)) {
@@ -453,6 +475,7 @@ export async function deploy(configFile, mode = 'check', { signal, onEvent = () 
     assertDigests(protectedFiles, digests);
     if (config.releases) {
       atomicJson(config.releases.pointer, { version: 1, commit: target, directory: buildDirectory });
+      unusedRelease = undefined;
     }
     releaseRegistries();
     save('starting');
@@ -478,10 +501,14 @@ export async function deploy(configFile, mode = 'check', { signal, onEvent = () 
   } catch (error) {
     // Keep the last successful phase, including 'starting', for a safe subsequent apply.
     event('failure', { code: error.code ?? 'IO', phase: journal?.phase ?? 'preflight' });
-    if (config.releases && journal?.release_directory &&
-        ['installing', 'typechecking', 'testing', 'building'].includes(journal.phase)) {
+    if (validatingCandidate && error.exitCode !== 2 && error.code !== 'CANCELLED') {
+      error.candidateFailure = { target: journal.target, phase: journal.phase,
+        code: error.code ?? 'IO', message: error instanceof DeploymentError ? error.message : 'Candidate validation failed.',
+        command_log: commandLog, event_log: eventLog };
+    }
+    if (config.releases && unusedRelease && !['stopping', 'starting'].includes(journal.phase)) {
       try {
-        const directory = releasePath(config, journal.release_directory);
+        const directory = releasePath(config, unusedRelease);
         const pointer = existsSync(config.releases.pointer) ? readJson(config.releases.pointer) : null;
         if (pointer?.directory !== directory && readJson(join(directory, '.workbench-release.json')).scope === config.scope) {
           rmSync(directory, { recursive: true });

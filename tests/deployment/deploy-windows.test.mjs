@@ -33,9 +33,13 @@ const control = read('control.json');
 const npm = process.argv[1].endsWith('npm-cli.mjs');
 const action = npm ? 'npm ' + process.argv.slice(2).join(' ') : process.argv[2];
 const calls = read('calls.json'); calls.push(action); save('calls.json', calls);
-if (control.fail === action) { console.error('fixture failure: ' + action); process.exit(7); }
 if (npm) {
-  if (!fs.existsSync(join(root, 'works.json.lock'))) throw new Error('Missing registry lock');
+  const isolated = fs.existsSync(join(process.cwd(), '.workbench-release.json'));
+  if (fs.existsSync(join(root, 'works.json.lock')) === isolated) throw new Error('Wrong validation lock scope');
+  if (isolated && [join(root, 'phone', 'operation.lock'), join(root, 'guardian.paused')].some(fs.existsSync)) {
+    throw new Error('Live execution is blocked during isolated validation');
+  }
+  if (control.fail === action) { console.error('fixture failure: ' + action); process.exit(7); }
   if (control.liveDllPath) {
     if (fs.readFileSync(control.liveDllPath, 'utf8') !== 'in-use native library') throw new Error('Live dependencies were changed');
     if (action === 'npm ci') {
@@ -53,7 +57,16 @@ if (npm) {
   }
   console.log('fixture ' + action);
 } else {
+  if (control.fail === action) process.exit(7);
   const runtime = read('runtime.json');
+  if (action === 'stop') {
+    if (!fs.existsSync(join(root, 'works.json.lock'))) throw new Error('Missing activation registry lock');
+    if (fs.existsSync(join(root, 'auto.json'))) {
+      const auto = read('auto.json');
+      if (auto.phone_state_directory && !fs.existsSync(join(auto.phone_state_directory, 'operation.lock'))) throw new Error('Missing phone lock');
+      if (auto.guardian && !fs.existsSync(auto.guardian.pause_file)) throw new Error('Guardian was not paused');
+    }
+  }
   if (action === 'stop' && !control.ignoreStop) runtime.process_running = false;
   if (action === 'start') {
     if (fs.existsSync(join(root, 'works.json.lock'))) throw new Error('Registry still locked at startup');
@@ -306,6 +319,151 @@ test('automatic deployment coordinates the guardian and phone, skips unchanged v
   assert.equal(existsSync(join(f.config.state_directory, 'automatic.lock')), false);
   assert.equal(json(join(f.config.state_directory, 'automatic.json')).status, 'failed');
   assert.equal(json(releases.pointer).commit, f.initial);
+});
+
+test('failed automatic candidates remain blocked across cycles and process restarts until a new commit arrives', async t => {
+  const f = fixture(t), releases = enableReleases(f);
+  await deploy(f.configFile, 'apply');
+  const pointer = readFileSync(releases.pointer, 'utf8'), runtime = f.runtime();
+  const target = f.publish(), auto = join(f.privateDir, 'auto.json');
+  save(auto, { version: 1, hostname: hostname(), deployment_config: f.configFile });
+  f.control({ fail: 'npm test' });
+  await rejection(autoDeploy(auto), 'COMMAND');
+  const failureFile = join(f.config.state_directory, 'automatic-failure.json');
+  const failure = readFileSync(failureFile, 'utf8');
+  assert.equal(json(failureFile).target, target);
+  assert.equal(json(failureFile).phase, 'testing');
+  assert.equal(json(failureFile).code, 'COMMAND');
+  assert.match(json(failureFile).message, /npm test failed/);
+  assert.ok(existsSync(json(failureFile).command_log));
+  const before = f.calls().length;
+  assert.equal((await autoDeploy(auto)).status, 'blocked-failed-candidate');
+  const output = execFileSync(process.execPath, [join(dirname(script), 'auto-deploy-windows.mjs'), '--config', auto],
+    { encoding: 'utf8', windowsHide: true, timeout: 30000 });
+  assert.equal(JSON.parse(output).status, 'blocked-failed-candidate');
+  assert.deepEqual(f.calls().slice(before), ['status', 'status']);
+  assert.equal(readFileSync(failureFile, 'utf8'), failure);
+  assert.equal(readFileSync(releases.pointer, 'utf8'), pointer);
+  assert.deepEqual(f.runtime(), runtime); noLocks(f);
+  const next = f.publish('corrected release\n'); f.control({});
+  assert.equal((await autoDeploy(auto)).target, next);
+  assert.equal(json(releases.pointer).commit, next);
+  assert.equal(existsSync(failureFile), false);
+});
+
+test('explicit automatic retry revalidates the same failed candidate and clears its failure after success', async t => {
+  const f = fixture(t); enableReleases(f);
+  const auto = join(f.privateDir, 'auto.json');
+  save(auto, { version: 1, hostname: hostname(), deployment_config: f.configFile });
+  f.control({ fail: 'npm test' });
+  await rejection(autoDeploy(auto), 'COMMAND');
+  f.control({});
+  const output = execFileSync(process.execPath,
+    [join(dirname(script), 'auto-deploy-windows.mjs'), '--config', auto, '--retry-failed'],
+    { encoding: 'utf8', windowsHide: true, timeout: 30000 });
+  assert.equal(JSON.parse(output).status, 'deployed');
+  assert.equal(f.calls().filter(action => action === 'npm test').length, 2);
+  assert.equal(existsSync(join(f.config.state_directory, 'automatic-failure.json')), false); noLocks(f);
+});
+
+test('a verified manual deployment clears obsolete automatic failure suppression', async t => {
+  const f = fixture(t); enableReleases(f);
+  const auto = join(f.privateDir, 'auto.json');
+  save(auto, { version: 1, hostname: hostname(), deployment_config: f.configFile });
+  f.control({ fail: 'npm test' });
+  await rejection(autoDeploy(auto), 'COMMAND');
+  f.control({});
+  await deploy(f.configFile, 'apply');
+  const before = f.calls().length;
+  assert.equal((await autoDeploy(auto)).status, 'up-to-date');
+  assert.deepEqual(f.calls().slice(before), ['status']);
+  assert.equal(existsSync(join(f.config.state_directory, 'automatic-failure.json')), false); noLocks(f);
+});
+
+test('new work during isolated validation defers activation without recording a failed candidate', async t => {
+  const f = fixture(t), releases = enableReleases(f);
+  const auto = join(f.privateDir, 'auto.json');
+  save(auto, { version: 1, hostname: hostname(), deployment_config: f.configFile });
+  const busy = { version: 1, works: [], runs: [{ state: 'running', owner_pid: process.pid }] };
+  f.control({ mutateAt: 'npm test', mutateFile: f.registry, mutateContent: JSON.stringify(busy) });
+  await rejection(autoDeploy(auto), 'BUSY');
+  assert.deepEqual(json(f.registry), busy); noRestart(f); noLocks(f);
+  assert.equal(readdirSync(releases.directory).length, 0);
+  assert.equal(existsSync(join(f.config.state_directory, 'automatic-failure.json')), false);
+  save(f.registry, { version: 1, works: [], runs: [] }); f.control({});
+  assert.equal((await autoDeploy(auto)).status, 'deployed');
+});
+
+test('completed work written during isolated preparation is preserved and permits activation', async t => {
+  const f = fixture(t); enableReleases(f);
+  const completed = { version: 1, works: [{ id: 'new-work' }], runs: [{ state: 'completed' }] };
+  f.control({ mutateAt: 'npm test', mutateFile: f.registry, mutateContent: JSON.stringify(completed) });
+  assert.equal((await deploy(f.configFile, 'apply')).result, 'deployed');
+  assert.deepEqual(json(f.registry), completed); noLocks(f);
+});
+
+test('activation rechecks work, protected files and the active release after awaiting maintenance', async t => {
+  for (const change of ['work', 'config', 'pointer', 'lock']) await t.test(change, async t => {
+    const f = fixture(t), releases = enableReleases(f);
+    let unlock, entered = false;
+    const beforeActivate = async () => {
+      entered = true;
+      assert.ok(f.calls().includes('npm run build')); noLocksForRegistry();
+      if (change === 'work') save(f.registry, { version: 1, works: [], runs: [{ state: 'queued' }] });
+      if (change === 'config') writeFileSync(join(f.privateDir, 'profile.yaml'), 'changed during guardian wait');
+      if (change === 'pointer') save(releases.pointer, { version: 1, directory: 'other' });
+      if (change === 'lock') unlock = acquireLock(f.registry + '.lock', 'new task writer');
+    };
+    const noLocksForRegistry = () => assert.equal(existsSync(f.registry + '.lock'), false);
+    try {
+      await rejection(deploy(f.configFile, 'apply', { beforeActivate }),
+        { work: 'BUSY', config: 'CONFIG_CHANGED', pointer: 'RELEASE_CHANGED', lock: 'LOCKED' }[change]);
+      if (change === 'lock') assert.equal(existsSync(f.registry + '.lock'), true);
+    } finally { unlock?.(); }
+    assert.equal(entered, true); noRestart(f); noLocks(f);
+    assert.equal(readdirSync(releases.directory).length, 0);
+  });
+});
+
+test('automatic check and apply must agree on the candidate before preparing it', async t => {
+  const f = fixture(t); enableReleases(f);
+  const auto = join(f.privateDir, 'auto.json');
+  save(auto, { version: 1, hostname: hostname(), deployment_config: f.configFile });
+  await rejection(autoDeploy(auto, { runDeploy: async (file, mode, options) => {
+    const result = await deploy(file, mode, options);
+    if (mode === 'check') f.publish();
+    return result;
+  } }), 'TARGET_CHANGED');
+  assert.deepEqual(f.calls(), ['status']); noRestart(f); noLocks(f);
+  assert.equal(existsSync(join(f.config.state_directory, 'automatic-failure.json')), false);
+});
+
+test('cancelled preparation is retryable and releases all update locks', async t => {
+  const f = fixture(t); enableReleases(f);
+  const auto = join(f.privateDir, 'auto.json'), controller = new AbortController();
+  save(auto, { version: 1, hostname: hostname(), deployment_config: f.configFile });
+  await rejection(autoDeploy(auto, { signal: controller.signal, runDeploy: (file, mode, options) => deploy(file, mode, {
+    ...options, onEvent: event => {
+      options.onEvent?.(event);
+      if (event.event === 'phase' && event.phase === 'testing') controller.abort();
+    },
+  }) }), 'CANCELLED');
+  noRestart(f); noLocks(f);
+  assert.equal(existsSync(join(f.config.state_directory, 'automatic-failure.json')), false);
+  assert.equal((await autoDeploy(auto)).status, 'deployed');
+});
+
+test('automatic startup response recovery is not blocked as a failed candidate or restarted twice', async t => {
+  const f = fixture(t), releases = enableReleases(f);
+  const auto = join(f.privateDir, 'auto.json');
+  save(auto, { version: 1, hostname: hostname(), deployment_config: f.configFile });
+  f.control({ releasePointer: releases.pointer, failAfterStart: true });
+  await rejection(autoDeploy(auto), 'COMMAND');
+  assert.equal(f.state().phase, 'starting');
+  assert.equal(existsSync(join(f.config.state_directory, 'automatic-failure.json')), false);
+  const before = f.calls().length;
+  assert.equal((await autoDeploy(auto)).status, 'recovered');
+  assert.deepEqual(f.calls().slice(before), ['status', 'status']); noLocks(f);
 });
 
 for (const [name, dirty] of [
